@@ -46,13 +46,16 @@ from typing import Any
 
 from aw_client import ActivityWatchClient
 from aw_client.queries import DesktopQueryParams, canonicalEvents
+from tracker_config import OUTPUT_DIRECTORY
 
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 5600
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIRECTORY = SCRIPT_DIRECTORY / "output"
+
+# Keep the validated legacy location active until the data migration is complete.
+DEFAULT_OUTPUT_DIRECTORY = OUTPUT_DIRECTORY
 
 CLIENT_NAME = "system-tracker-raw-loader"
 

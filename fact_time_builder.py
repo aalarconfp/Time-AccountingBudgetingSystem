@@ -61,19 +61,18 @@ FACT_TIME_COLUMNS = [
 ]
 
 RAW_REQUIRED_COLUMNS = [
-    "ActivityWatch_Event_ID",
     "Date",
     "Start",
     "End",
     "Duration_sec",
     "Device",
     "Source",
-    "Source_Bucket",
-    "Source_Event_ID",
+    "Bucket",
+    "AW_Event_ID",
     "App",
     "Window_Title",
-    "Category",
-    "Subcategory",
+    "AW_Category",
+    "AW_Subcategory",
 ]
 
 
@@ -381,17 +380,12 @@ def normalize_raw_event(
         )
 
     source_event_id = normalize_text(
-        row.get("Source_Event_ID")
+        row.get("AW_Event_ID")
     )
 
     if not source_event_id:
-        source_event_id = normalize_text(
-            row.get("ActivityWatch_Event_ID")
-        )
-
-    if not source_event_id:
         raise ValueError(
-            f"Missing source event ID in {path}, "
+            f"Missing ActivityWatch event ID in {path}, "
             f"row {row_number}."
         )
 
@@ -413,13 +407,13 @@ def normalize_raw_event(
 
     category = (
         normalize_text(
-            row.get("Category")
+            row.get("AW_Category")
         )
         or "Uncategorized"
     )
 
     subcategory = normalize_text(
-        row.get("Subcategory")
+        row.get("AW_Subcategory")
     )
 
     fact_time_id = build_fact_time_id(
@@ -448,7 +442,7 @@ def normalize_raw_event(
             or "ActivityWatch"
         ),
         "Source_Bucket": normalize_text(
-            row.get("Source_Bucket")
+            row.get("Bucket")
         ),
         "Source_Event_ID": source_event_id,
         "App": normalize_text(
@@ -460,7 +454,6 @@ def normalize_raw_event(
         "Category": category,
         "Subcategory": subcategory,
     }
-
 
 def normalize_events(
     rows: list[dict[str, str]],
