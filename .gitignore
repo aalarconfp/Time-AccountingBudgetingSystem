@@ -1,0 +1,27 @@
+@"
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# Local development
+.vscode/
+.idea/
+
+# Generated output
+output/
+
+# Local test/debug files
+*.log
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets/config overrides
+*.local
+"@ | Set-Content ".gitignore"
