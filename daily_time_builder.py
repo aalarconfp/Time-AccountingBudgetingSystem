@@ -1,63 +1,40 @@
-# G:\My Drive\Personal Life\Habit and Wellness\System\_Tracker\daily_time_builder.py
+# G:\My Drive\Personal Life\Habit and Wellness\System_Tracker\daily_time_builder.py
 
-"""Build the Daily_Time analytical layer from Fact_Time datasets.
+"""Build source-specific Daily_Time datasets from canonical Fact_Time data.
 
-Daily_Time aggregates event-level Fact_Time records into daily
-Category/Subcategory totals.
+The builder consumes the canonical Fact_Time layer and produces one
+deterministic Daily_Time CSV per calendar date.
 
-The builder is intentionally separate from Fact_Time. Fact_Time remains
-the detailed event-level source, while Daily_Time is an analytical
-summary designed for daily, weekly, and monthly reporting.
+Input:
+    output/Fact/Time/<source>/<device>/Fact_Time_YYYY-MM-DD.csv
 
-Missing Fact_Time datasets are reported as NO DATA rather than being
-interpreted as zero activity.
+Output:
+    output/Daily/Time/<source>/<device>/Daily_Time_YYYY-MM-DD.csv
+
+Daily_Time preserves the established seven-column schema:
+
+    Date
+    Category
+    Subcategory
+    Duration_sec
+    Duration_min
+    Duration_hours
+    Event_Count
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import os
-import sys
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-from typing import Any
+from zoneinfo import ZoneInfo
 
-from tracker_config import (
-    FACT_TIME_DIRECTORY,
-    ensure_output_directories,
-    fact_time_path,
-    latest_completed_date,
-    today_local,
-    validate_completed_date,
-)
+from config.paths import DAILY_ROOT, FACT_TIME_ROOT
+from config.sources import SourceDefinition, get_source_definition
+from config.tracker_config import DEFAULT_TIMEZONE
 
-
-PROJECT_DIRECTORY = Path(__file__).resolve().parent
-OUTPUT_DIRECTORY = (
-    PROJECT_DIRECTORY / "output" / "Daily_Time"
-)
-DAILY_TIME_FILE = (
-    OUTPUT_DIRECTORY / "Daily_Time.csv"
-)
-
-FACT_TIME_REQUIRED_COLUMNS = {
-    "Fact_Time_ID",
-    "Date",
-    "Start",
-    "End",
-    "Duration_sec",
-    "Device",
-    "Source",
-    "Source_Bucket",
-    "Source_Event_ID",
-    "App",
-    "Window_Title",
-    "Category",
-    "Subcategory",
-}
 
 DAILY_TIME_COLUMNS = [
     "Date",
@@ -70,477 +47,371 @@ DAILY_TIME_COLUMNS = [
 ]
 
 
+def parse_target_date(value: str | None) -> date:
+    """Parse a target date or use today's date in the project timezone."""
+    if value is None:
+        return datetime.now(ZoneInfo(DEFAULT_TIMEZONE)).date()
+
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid date '{value}'. Expected YYYY-MM-DD."
+        ) from exc
+
+
+def get_project_timezone() -> ZoneInfo:
+    """Return the configured project timezone."""
+    try:
+        return ZoneInfo(DEFAULT_TIMEZONE)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not load configured timezone '{DEFAULT_TIMEZONE}'."
+        ) from exc
+
+
+def latest_completed_date() -> date:
+    """Return the most recent completed local calendar date."""
+    return (
+        datetime.now(get_project_timezone()).date()
+        - timedelta(days=1)
+    )
+
+
+def validate_completed_date(target_date: date) -> None:
+    """Reject a date that has not yet fully completed."""
+    latest_date = latest_completed_date()
+
+    if target_date > latest_date:
+        raise ValueError(
+            f"Date {target_date.isoformat()} is not a completed day. "
+            f"The latest completed date is {latest_date.isoformat()}."
+        )
+
+
+def resolve_source_directory_name(source: SourceDefinition) -> str:
+    """Return the stable directory name used for a source definition."""
+    if source.device:
+        return source.device
+
+    return source.source.value
+
+
+def get_fact_time_directory(source: SourceDefinition) -> Path:
+    """Return the canonical Fact_Time directory for a source."""
+    return (
+        FACT_TIME_ROOT
+        / source.source.value
+        / resolve_source_directory_name(source)
+    )
+
+
+def get_daily_time_directory(source: SourceDefinition) -> Path:
+    """Return the canonical Daily_Time directory for a source."""
+    return (
+        DAILY_ROOT
+        / "Time"
+        / source.source.value
+        / resolve_source_directory_name(source)
+    )
+
+
+def get_fact_time_path(
+    source: SourceDefinition,
+    target_date: date,
+) -> Path:
+    """Return the canonical Fact_Time path for a date."""
+    return (
+        get_fact_time_directory(source)
+        / f"Fact_Time_{target_date.isoformat()}.csv"
+    )
+
+
+def get_daily_time_path(
+    source: SourceDefinition,
+    target_date: date,
+) -> Path:
+    """Return the canonical Daily_Time path for a date."""
+    return (
+        get_daily_time_directory(source)
+        / f"Daily_Time_{target_date.isoformat()}.csv"
+    )
+
+
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Build Daily_Time from Fact_Time datasets."
+        description=(
+            "Build source-specific Daily_Time datasets from "
+            "canonical Fact_Time CSV files."
+        )
     )
 
-    date_group = parser.add_mutually_exclusive_group()
-
-    date_group.add_argument(
+    parser.add_argument(
         "--date",
         dest="target_date",
-        help="Build one date: YYYY-MM-DD.",
-    )
-
-    date_group.add_argument(
-        "--days",
-        type=int,
         help=(
-            "Build the specified number of dates ending "
-            "with the latest eligible date."
+            "Calendar date to build in YYYY-MM-DD format. "
+            "Defaults to the latest completed date."
         ),
     )
 
-    date_group.add_argument(
+    parser.add_argument(
         "--start-date",
-        dest="start_date",
-        help="Inclusive start date: YYYY-MM-DD.",
+        help=(
+            "First calendar date to build in YYYY-MM-DD format. "
+            "Use with --end-date."
+        ),
     )
 
     parser.add_argument(
         "--end-date",
-        dest="end_date",
-        help="Inclusive end date: YYYY-MM-DD.",
+        help=(
+            "Last calendar date to build in YYYY-MM-DD format. "
+            "Use with --start-date."
+        ),
     )
 
     parser.add_argument(
-        "--include-today",
-        action="store_true",
-        help="Allow processing today's incomplete data.",
+        "--source",
+        choices=[
+            "asus_laptop",
+            "desktop",
+            "iphone",
+            "habit",
+        ],
+        default="asus_laptop",
+        help=(
+            "Configured source. Default: asus_laptop."
+        ),
     )
 
     return parser.parse_args()
 
 
-def parse_date(
-    value: str,
-    argument_name: str,
-) -> date:
-    """Parse a YYYY-MM-DD value."""
-    try:
-        return date.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid {argument_name}: '{value}'. "
-            "Expected YYYY-MM-DD."
-        ) from exc
-
-
-def resolve_target_dates(
+def parse_date_range(
     args: argparse.Namespace,
-) -> list[date]:
-    """Resolve command-line arguments into target dates."""
-    latest_allowed = (
-        today_local()
-        if args.include_today
-        else latest_completed_date()
-    )
-
-    if args.target_date:
-        target_date = parse_date(
-            args.target_date,
-            "--date",
+) -> tuple[date, date]:
+    """Resolve the requested date or date range."""
+    if args.target_date and (
+        args.start_date or args.end_date
+    ):
+        raise ValueError(
+            "--date cannot be combined with --start-date or --end-date."
         )
 
-        validate_completed_date(
-            target_date,
-            include_today=args.include_today,
+    if args.start_date and not args.end_date:
+        raise ValueError(
+            "--start-date requires --end-date."
         )
 
-        return [target_date]
-
-    if args.days is not None:
-        if args.days < 1:
-            raise ValueError(
-                "--days must be at least 1."
-            )
-
-        first_date = latest_allowed - timedelta(
-            days=args.days - 1,
+    if args.end_date and not args.start_date:
+        raise ValueError(
+            "--end-date requires --start-date."
         )
 
-        return [
-            first_date + timedelta(days=offset)
-            for offset in range(args.days)
-        ]
-
-    if args.start_date:
-        if not args.end_date:
-            raise ValueError(
-                "--start-date requires --end-date."
-            )
-
-        start_date = parse_date(
-            args.start_date,
-            "--start-date",
-        )
-
-        end_date = parse_date(
-            args.end_date,
-            "--end-date",
-        )
+    if args.start_date and args.end_date:
+        start_date = parse_target_date(args.start_date)
+        end_date = parse_target_date(args.end_date)
 
         if end_date < start_date:
             raise ValueError(
-                "--end-date cannot be earlier than "
-                "--start-date."
+                "--end-date cannot be earlier than --start-date."
             )
 
-        if end_date > latest_allowed:
-            if args.include_today:
-                end_date = latest_allowed
-            else:
-                print(
-                    f"WARNING: End date {end_date.isoformat()} "
-                    f"is not eligible."
-                )
-                print(
-                    f"Limiting end date to "
-                    f"{latest_allowed.isoformat()}."
-                )
-                end_date = latest_allowed
+        return start_date, end_date
 
-        if start_date > end_date:
-            raise ValueError(
-                "No eligible dates remain in the requested range."
-            )
+    if args.target_date:
+        target_date = parse_target_date(args.target_date)
+        return target_date, target_date
 
-        return [
-            start_date + timedelta(days=offset)
-            for offset in range(
-                (end_date - start_date).days + 1
-            )
-        ]
-
-    return [latest_allowed]
+    target_date = latest_completed_date()
+    return target_date, target_date
 
 
-def read_csv(
-    path: Path,
-) -> list[dict[str, str]]:
-    """Read a CSV file."""
-    if not path.exists():
-        return []
+def get_date_range(
+    start_date: date,
+    end_date: date,
+) -> list[date]:
+    """Return every calendar date in an inclusive date range."""
+    number_of_days = (end_date - start_date).days
 
-    with path.open(
-        mode="r",
-        newline="",
-        encoding="utf-8-sig",
-    ) as file:
-        reader = csv.DictReader(file)
-
-        if reader.fieldnames is None:
-            raise ValueError(
-                f"CSV has no header: {path}"
-            )
-
-        return list(reader)
+    return [
+        start_date + timedelta(days=offset)
+        for offset in range(number_of_days + 1)
+    ]
 
 
-def write_csv_atomic(
-    rows: list[dict[str, Any]],
+def validate_fact_time_columns(
+    fieldnames: list[str] | None,
     path: Path,
 ) -> None:
-    """Write CSV data atomically."""
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    """Validate the Fact_Time columns required by Daily_Time."""
+    required_columns = {
+        "Date",
+        "Duration_sec",
+        "Category",
+        "Subcategory",
+    }
 
-    temporary_path: Path | None = None
+    actual_columns = set(fieldnames or [])
+    missing_columns = sorted(required_columns - actual_columns)
 
-    try:
-        with NamedTemporaryFile(
-            mode="w",
-            newline="",
-            encoding="utf-8-sig",
-            dir=path.parent,
-            prefix=f".{path.stem}_",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary_file:
-            temporary_path = Path(
-                temporary_file.name
-            )
-
-            writer = csv.DictWriter(
-                temporary_file,
-                fieldnames=DAILY_TIME_COLUMNS,
-                extrasaction="raise",
-            )
-
-            writer.writeheader()
-            writer.writerows(rows)
-
-            temporary_file.flush()
-            os.fsync(
-                temporary_file.fileno()
-            )
-
-        os.replace(
-            temporary_path,
-            path,
-        )
-
-    except Exception:
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink(
-                    missing_ok=True
-                )
-            except OSError:
-                pass
-
-        raise
-
-
-def validate_fact_time_schema(
-    rows: list[dict[str, str]],
-    path: Path,
-) -> None:
-    """Validate the Fact_Time input schema."""
-    if not rows:
-        return
-
-    columns = set(rows[0].keys())
-
-    missing = (
-        FACT_TIME_REQUIRED_COLUMNS - columns
-    )
-
-    if missing:
+    if missing_columns:
         raise ValueError(
-            f"Fact_Time file is missing required columns: "
-            f"{sorted(missing)}\n"
+            "Fact_Time file is missing required columns: "
+            f"{missing_columns}\n"
             f"File: {path}"
         )
 
 
-def normalize_text(
-    value: Any,
-) -> str:
-    """Return a normalized string."""
+def parse_duration(value: str, path: Path) -> float:
+    """Parse and validate a Fact_Time duration."""
+    try:
+        duration = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid Duration_sec value '{value}' in {path}."
+        ) from exc
+
+    if duration < 0:
+        raise ValueError(
+            f"Negative Duration_sec value '{duration}' in {path}."
+        )
+
+    return duration
+
+
+def normalize_dimension(value: str | None) -> str:
+    """Normalize an aggregation dimension while preserving empty values."""
     if value is None:
         return ""
 
     return str(value).strip()
 
 
-def parse_duration(
-    value: str,
-    row_number: int,
+def read_fact_time(
     path: Path,
-) -> float:
-    """Parse and validate Duration_sec."""
-    try:
-        duration = float(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid Duration_sec in {path}, "
-            f"row {row_number}: '{value}'."
-        ) from exc
-
-    if duration < 0:
-        raise ValueError(
-            f"Negative Duration_sec in {path}, "
-            f"row {row_number}: {duration}."
-        )
-
-    return duration
-
-
-def aggregate_fact_time(
-    rows: list[dict[str, str]],
     target_date: date,
-    path: Path,
-) -> list[dict[str, Any]]:
-    """Aggregate Fact_Time records by category and subcategory."""
-    expected_date = target_date.isoformat()
-
-    aggregates: defaultdict[
-        tuple[str, str],
-        dict[str, float | int],
-    ] = defaultdict(
-        lambda: {
-            "Duration_sec": 0.0,
-            "Event_Count": 0,
-        }
-    )
-
-    seen_event_ids: set[str] = set()
-
-    for row_number, row in enumerate(
-        rows,
-        start=2,
-    ):
-        row_date = normalize_text(
-            row.get("Date")
-        )
-
-        if row_date != expected_date:
-            raise ValueError(
-                f"Fact_Time row {row_number} in {path} "
-                f"has Date '{row_date}', expected "
-                f"'{expected_date}'."
-            )
-
-        event_id = normalize_text(
-            row.get("Fact_Time_ID")
-        )
-
-        if not event_id:
-            raise ValueError(
-                f"Fact_Time row {row_number} in {path} "
-                "is missing Fact_Time_ID."
-            )
-
-        if event_id in seen_event_ids:
-            raise ValueError(
-                f"Duplicate Fact_Time_ID '{event_id}' "
-                f"in {path}, row {row_number}."
-            )
-
-        seen_event_ids.add(event_id)
-
-        category = (
-            normalize_text(
-                row.get("Category")
-            )
-            or "Uncategorized"
-        )
-
-        subcategory = normalize_text(
-            row.get("Subcategory")
-        )
-
-        duration = parse_duration(
-            normalize_text(
-                row.get("Duration_sec")
-            ),
-            row_number,
+) -> list[dict[str, str]]:
+    """Read and validate a single Fact_Time dataset."""
+    with path.open(
+        "r",
+        encoding="utf-8-sig",
+        newline="",
+    ) as handle:
+        reader = csv.DictReader(handle)
+        validate_fact_time_columns(
+            reader.fieldnames,
             path,
         )
 
-        key = (
-            category,
-            subcategory,
+        rows = list(reader)
+
+    target_date_string = target_date.isoformat()
+    filtered_rows: list[dict[str, str]] = []
+
+    for row in rows:
+        row_date = normalize_dimension(row.get("Date"))
+
+        if row_date != target_date_string:
+            raise ValueError(
+                f"Fact_Time file contains unexpected date "
+                f"'{row_date}' while processing "
+                f"{target_date_string}.\n"
+                f"File: {path}"
+            )
+
+        filtered_rows.append(row)
+
+    return filtered_rows
+
+
+def aggregate_daily_rows(
+    fact_rows: list[dict[str, str]],
+    target_date: date,
+) -> list[dict[str, str]]:
+    """Aggregate Fact_Time rows into Daily_Time rows."""
+    totals: dict[tuple[str, str], float] = defaultdict(float)
+    event_counts: dict[tuple[str, str], int] = defaultdict(int)
+
+    for row in fact_rows:
+        category = normalize_dimension(row.get("Category"))
+        subcategory = normalize_dimension(row.get("Subcategory"))
+        duration = parse_duration(
+            row.get("Duration_sec", ""),
+            Path("<Fact_Time input>"),
         )
 
-        aggregates[key]["Duration_sec"] += duration
-        aggregates[key]["Event_Count"] += 1
+        key = (category, subcategory)
 
-    result: list[dict[str, Any]] = []
+        totals[key] += duration
+        event_counts[key] += 1
 
-    for (
-        category,
-        subcategory,
-    ), values in sorted(
-        aggregates.items(),
+    daily_rows: list[dict[str, str]] = []
+
+    for (category, subcategory), duration in sorted(
+        totals.items(),
         key=lambda item: (
             item[0][0],
             item[0][1],
         ),
     ):
-        duration_sec = float(
-            values["Duration_sec"]
-        )
-
-        result.append(
+        daily_rows.append(
             {
-                "Date": expected_date,
+                "Date": target_date.isoformat(),
                 "Category": category,
                 "Subcategory": subcategory,
-                "Duration_sec": round(
-                    duration_sec,
-                    3,
-                ),
-                "Duration_min": round(
-                    duration_sec / 60,
-                    3,
-                ),
-                "Duration_hours": round(
-                    duration_sec / 3600,
-                    4,
-                ),
-                "Event_Count": int(
-                    values["Event_Count"]
-                ),
+                "Duration_sec": f"{duration:.3f}",
+                "Duration_min": f"{duration / 60:.3f}",
+                "Duration_hours": f"{duration / 3600:.6f}",
+                "Event_Count": str(event_counts[(category, subcategory)]),
             }
         )
 
-    return result
+    return daily_rows
 
 
-def load_existing_daily_time() -> list[dict[str, str]]:
-    """Load the existing Daily_Time dataset."""
-    if not DAILY_TIME_FILE.exists():
-        return []
-
-    with DAILY_TIME_FILE.open(
-        mode="r",
-        newline="",
-        encoding="utf-8-sig",
-    ) as file:
-        reader = csv.DictReader(file)
-
-        if reader.fieldnames is None:
-            raise ValueError(
-                f"CSV has no header: {DAILY_TIME_FILE}"
-            )
-
-        missing = (
-            set(DAILY_TIME_COLUMNS)
-            - set(reader.fieldnames)
-        )
-
-        if missing:
-            raise ValueError(
-                "Daily_Time file is missing required "
-                f"columns: {sorted(missing)}"
-            )
-
-        return list(reader)
-
-
-def replace_dates(
-    existing_rows: list[dict[str, str]],
-    target_dates: set[date],
-    new_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Replace existing summaries for the processed dates."""
-    target_date_strings = {
-        target.isoformat()
-        for target in target_dates
-    }
-
-    retained = [
-        {
-            column: row.get(column, "")
-            for column in DAILY_TIME_COLUMNS
-        }
-        for row in existing_rows
-        if normalize_text(row.get("Date"))
-        not in target_date_strings
-    ]
-
-    retained.extend(new_rows)
-
-    retained.sort(
-        key=lambda row: (
-            str(row["Date"]),
-            str(row["Category"]),
-            str(row["Subcategory"]),
-        )
+def write_daily_time(
+    path: Path,
+    rows: list[dict[str, str]],
+) -> None:
+    """Write a deterministic Daily_Time CSV."""
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
-    return retained
+    temporary_path = path.with_suffix(".tmp")
+
+    with temporary_path.open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=DAILY_TIME_COLUMNS,
+            extrasaction="raise",
+        )
+
+        writer.writeheader()
+        writer.writerows(rows)
+
+    temporary_path.replace(path)
 
 
-def format_duration(
-    seconds: float,
-) -> str:
+def calculate_duration(
+    rows: list[dict[str, str]],
+) -> float:
+    """Calculate total Daily_Time duration."""
+    return sum(
+        float(row["Duration_sec"])
+        for row in rows
+    )
+
+
+def format_duration(seconds: float) -> str:
     """Format seconds as hours and minutes."""
     total_minutes = int(
         round(max(seconds, 0.0) / 60)
@@ -551,277 +422,216 @@ def format_duration(
         60,
     )
 
-    if hours:
-        return f"{hours}h {minutes:02d}m"
-
-    return f"{minutes}m"
+    return f"{hours}h {minutes:02d}m"
 
 
-def build_dates(
-    dates: list[date],
-) -> tuple[
-    list[dict[str, Any]],
-    list[date],
-]:
-    """Build Daily_Time rows for the requested dates."""
-    new_rows: list[dict[str, Any]] = []
-    no_data_dates: list[date] = []
+def build_date(
+    source: SourceDefinition,
+    target_date: date,
+) -> tuple[int, float, bool]:
+    """Build Daily_Time for one date."""
+    fact_path = get_fact_time_path(
+        source,
+        target_date,
+    )
 
-    for target_date in dates:
+    daily_path = get_daily_time_path(
+        source,
+        target_date,
+    )
+
+    print(f"--- {target_date.isoformat()} ---")
+    print(f"Fact_Time input : {fact_path}")
+    print(f"Daily_Time output: {daily_path}")
+
+    if not fact_path.exists():
+        print("Fact_Time rows   : MISSING")
+        print("Daily_Time rows  : 0")
+        print("RESULT           : MISSING INPUT")
         print()
-        print(
-            f"--- {target_date.isoformat()} ---"
+
+        return 0, 0.0, False
+
+    fact_rows = read_fact_time(
+        fact_path,
+        target_date,
+    )
+
+    if not fact_rows:
+        write_daily_time(
+            daily_path,
+            [],
         )
 
-        fact_path = fact_time_path(
-            target_date
-        )
+        print("Fact_Time rows   : 0")
+        print("Daily_Time rows  : 0")
+        print("Total daily time : 0m")
+        print("RESULT           : ZERO-EVENT DATE")
+        print()
 
-        print(
-            f"Fact_Time input : {fact_path}"
-        )
+        return 0, 0.0, True
 
-        if not fact_path.exists():
-            print(
-                "Result: NO DATA — Fact_Time dataset "
-                "does not exist for this date."
-            )
+    daily_rows = aggregate_daily_rows(
+        fact_rows,
+        target_date,
+    )
 
-            no_data_dates.append(
-                target_date
-            )
-            continue
+    write_daily_time(
+        daily_path,
+        daily_rows,
+    )
 
-        fact_rows = read_csv(
-            fact_path
-        )
+    total_duration = calculate_duration(
+        daily_rows
+    )
 
-        validate_fact_time_schema(
-            fact_rows,
-            fact_path,
-        )
-
-        print(
-            f"Fact_Time rows  : {len(fact_rows):,}"
-        )
-
-        daily_rows = aggregate_fact_time(
-            fact_rows,
-            target_date,
-            fact_path,
-        )
-
-        duration = sum(
-            float(row["Duration_sec"])
-            for row in daily_rows
-        )
-
-        print(
-            f"Daily categories: {len(daily_rows):,}"
-        )
-
-        print(
-            f"Total time      : "
-            f"{format_duration(duration)}"
-        )
-
-        new_rows.extend(
-            daily_rows
-        )
+    print(
+        f"Fact_Time rows   : {len(fact_rows):,}"
+    )
+    print(
+        f"Daily_Time rows  : {len(daily_rows):,}"
+    )
+    print(
+        f"Total daily time : {format_duration(total_duration)}"
+    )
+    print(
+        f"Output           : {daily_path}"
+    )
+    print("RESULT           : BUILT")
+    print()
 
     return (
-        new_rows,
-        no_data_dates,
+        len(daily_rows),
+        total_duration,
+        True,
     )
-
-
-def print_category_summary(
-    rows: list[dict[str, Any]],
-) -> None:
-    """Print category-level totals."""
-    totals: defaultdict[
-        str,
-        float,
-    ] = defaultdict(float)
-
-    for row in rows:
-        totals[
-            str(row["Category"])
-        ] += float(
-            row["Duration_sec"]
-        )
-
-    total_seconds = sum(
-        totals.values()
-    )
-
-    if total_seconds <= 0:
-        return
-
-    print()
-    print("=== Category Summary ===")
-
-    for category, seconds in sorted(
-        totals.items(),
-        key=lambda item: item[1],
-        reverse=True,
-    ):
-        percentage = (
-            seconds / total_seconds * 100
-        )
-
-        print(
-            f"{format_duration(seconds):>7} "
-            f"{percentage:5.1f}%  "
-            f"{category}"
-        )
 
 
 def main() -> int:
-    """Build Daily_Time datasets."""
+    """Build Daily_Time datasets for the requested source and dates."""
+    args = parse_arguments()
+
     try:
-        args = parse_arguments()
-
-        ensure_output_directories()
-        OUTPUT_DIRECTORY.mkdir(
-            parents=True,
-            exist_ok=True,
+        source = get_source_definition(
+            args.source
         )
 
-        dates = resolve_target_dates(
-            args
-        )
+        start_date, end_date = parse_date_range(args)
 
-        first_date = dates[0]
-        last_date = dates[-1]
+        for target_date in get_date_range(
+            start_date,
+            end_date,
+        ):
+            validate_completed_date(target_date)
 
         print("# Daily_Time Builder")
         print()
-
-        if len(dates) == 1:
-            print(
-                f"Date   : {first_date.isoformat()}"
-            )
-        else:
-            print(
-                f"Dates  : {first_date.isoformat()} → "
-                f"{last_date.isoformat()}"
-            )
-
+        print(f"Source   : {args.source}")
+        print(f"Context  : {source.context}")
         print(
-            f"Range  : {first_date.isoformat()} → "
-            f"{(last_date + timedelta(days=1)).isoformat()}"
+            f"Device   : "
+            f"{source.device or 'None'}"
         )
-
         print(
-            "Mode   : "
-            + (
-                "INCLUDES CURRENT DAY"
-                if args.include_today
-                else "COMPLETED DAYS ONLY"
-            )
+            f"Timezone : {DEFAULT_TIMEZONE}"
         )
-
+        print(
+            f"Dates    : "
+            f"{start_date.isoformat()} → "
+            f"{end_date.isoformat()}"
+        )
+        print(
+            "Mode     : COMPLETED DAYS ONLY"
+        )
         print()
+
         print("=== Configuration ===")
         print(
-            f"Fact input : {FACT_TIME_DIRECTORY}"
+            f"Fact input : "
+            f"{get_fact_time_directory(source)}"
         )
         print(
-            f"Daily output: {DAILY_TIME_FILE}"
+            f"Daily output: "
+            f"{get_daily_time_directory(source)}"
         )
-
-        new_rows, no_data_dates = build_dates(
-            dates
-        )
-
-        existing_rows = (
-            load_existing_daily_time()
-        )
-
-        final_rows = replace_dates(
-            existing_rows,
-            set(dates),
-            new_rows,
-        )
-
-        write_csv_atomic(
-            final_rows,
-            DAILY_TIME_FILE,
-        )
-
-        processed_dates = (
-            len(dates)
-            - len(no_data_dates)
-        )
-
-        total_seconds = sum(
-            float(row["Duration_sec"])
-            for row in new_rows
-        )
-
         print()
+
+        dates_checked = 0
+        dates_built = 0
+        zero_event_dates = 0
+        missing_fact_dates = 0
+        total_rows = 0
+        total_duration = 0.0
+
+        for target_date in get_date_range(
+            start_date,
+            end_date,
+        ):
+            dates_checked += 1
+
+            rows, duration, found = build_date(
+                source,
+                target_date,
+            )
+
+            if not found:
+                missing_fact_dates += 1
+                continue
+
+            dates_built += 1
+
+            if rows == 0:
+                zero_event_dates += 1
+                continue
+
+            total_rows += rows
+            total_duration += duration
+
         print("=" * 60)
         print("=== Daily_Time Build Summary ===")
         print(
-            f"Dates requested       : {len(dates):,}"
+            f"Dates checked          : {dates_checked}"
         )
         print(
-            f"Dates with data       : {processed_dates:,}"
+            f"Dates built            : {dates_built}"
         )
         print(
-            f"Dates without data    : "
-            f"{len(no_data_dates):,}"
+            f"Daily_Time rows        : {total_rows:,}"
         )
         print(
-            f"Daily summary rows    : "
-            f"{len(new_rows):,}"
+            f"Total daily time       : "
+            f"{format_duration(total_duration)}"
         )
         print(
-            f"Final Daily_Time rows : "
-            f"{len(final_rows):,}"
+            f"Zero-event dates       : "
+            f"{zero_event_dates}"
         )
         print(
-            f"Total analyzed time   : "
-            f"{format_duration(total_seconds)}"
-        )
-        print(
-            f"Output                : "
-            f"{DAILY_TIME_FILE}"
+            f"Missing Fact_Time dates: "
+            f"{missing_fact_dates}"
         )
 
-        if no_data_dates:
+        if missing_fact_dates:
             print()
-            print("No-data dates:")
-
-            for missing_date in no_data_dates:
-                print(
-                    f"  - {missing_date.isoformat()}"
-                )
-
-        print_category_summary(
-            new_rows
-        )
+            print(
+                "RESULT: DAILY_TIME BUILD FAILED."
+            )
+            print(
+                "One or more requested dates do not "
+                "have canonical Fact_Time input."
+            )
+            return 1
 
         print()
         print(
-            "RESULT: Daily_Time datasets "
-            "were built successfully."
+            "RESULT: DAILY_TIME BUILD PASSED."
         )
-
         return 0
 
-    except KeyboardInterrupt:
+    except (ValueError, RuntimeError, OSError) as exc:
         print()
         print(
-            "Cancelled."
-        )
-        return 130
-
-    except Exception as exc:
-        print(
-            f"\nERROR: {type(exc).__name__}: {exc}",
-            file=sys.stderr,
+            f"ERROR: {type(exc).__name__}: {exc}"
         )
         return 1
 

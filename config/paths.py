@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from config.sources import SourceType
@@ -57,6 +58,16 @@ def get_source_raw_root(source: SourceType) -> Path:
     except KeyError as exc:
         raise ValueError(f"Unsupported source: {source!r}") from exc
 
+def get_activitywatch_raw_path(
+    device: str,
+    target_date: date,
+) -> Path:
+    """Return the canonical Raw ActivityWatch path for a device and date."""
+    return (
+        ACTIVITYWATCH_RAW_ROOT
+        / device
+        / f"Raw_ActivityWatch_{target_date.isoformat()}.csv"
+    )
 
 def get_fact_time_root() -> Path:
     """Return the canonical Fact_Time directory."""

@@ -31,7 +31,7 @@ ANALYSIS_DIRECTORY = OUTPUT_DIRECTORY / "Analysis"
 
 ACTIVITYWATCH_SERVER_URL = "http://localhost:5600"
 
-DEFAULT_TIMEZONE = "America/New_York"
+DEFAULT_TIMEZONE = "America/Bogota"
 
 SOURCE_CONFIGURATIONS: tuple[SourceDefinition, ...] = (
     ASUS_LAPTOP,
