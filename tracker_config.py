@@ -7,17 +7,22 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from config.paths import PROJECT_ROOT
 
 
 # ---------------------------------------------------------------------------
 # Project paths
 # ---------------------------------------------------------------------------
 
-PROJECT_DIRECTORY = Path(__file__).resolve().parent
+PROJECT_DIRECTORY = PROJECT_ROOT
 
+# Legacy dataset locations remain active during the migration so the
+# validated ActivityWatch data does not need to move yet.
 OUTPUT_DIRECTORY = PROJECT_DIRECTORY / "output"
-
+RAW_ACTIVITYWATCH_DIRECTORY = OUTPUT_DIRECTORY
 FACT_TIME_DIRECTORY = OUTPUT_DIRECTORY / "Fact_Time"
+DAILY_TIME_DIRECTORY = OUTPUT_DIRECTORY / "Daily_Time"
+ANALYSIS_DIRECTORY = OUTPUT_DIRECTORY / "Analysis"
 
 
 # ---------------------------------------------------------------------------
