@@ -1,3 +1,5 @@
+# config/sources.py
+
 """Canonical source and device definitions."""
 
 from dataclasses import dataclass
@@ -42,7 +44,7 @@ ASUS_LAPTOP = SourceDefinition(
 DESKTOP = SourceDefinition(
     source=SourceType.ACTIVITYWATCH,
     observation_type=ObservationType.DEVICE_TIME,
-    device="Desktop-Andres",
+    device="DesktopPC-Andres",
     context="Personal",
     description="ActivityWatch data from the personal desktop.",
 )

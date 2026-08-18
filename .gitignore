@@ -1,18 +1,26 @@
-@"
+# FILE: .gitignore
+
 # Python
 __pycache__/
 *.py[cod]
 *.pyo
 .venv/
 venv/
+
+# Secrets
 .env
+.env.*
+!.env.example
+
+# Personal source data
+input/
+
+# Generated data
+output/
 
 # Local development
 .vscode/
 .idea/
-
-# Generated output
-output/
 
 # Local test/debug files
 *.log
@@ -24,4 +32,3 @@ Thumbs.db
 
 # Local secrets/config overrides
 *.local
-"@ | Set-Content ".gitignore"
