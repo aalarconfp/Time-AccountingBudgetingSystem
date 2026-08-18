@@ -2,32 +2,31 @@
 
 """AI-assisted Apple Screen Time screenshot ingestion.
 
-Each completed date should contain exactly three screenshots.
+Each completed date should contain exactly three screenshots:
 
-The original screenshots remain untouched. Before an API request, the
-screenshots are resized into temporary optimized images to reduce image
-input-token usage.
+1. Total Screen Time.
+2. Category breakdown.
+3. Social application detail.
 
-The AI performs evidence extraction only. Master-taxonomy classification
-happens downstream.
+The AI extracts visible evidence only.
 
-API requests and their token usage are recorded in:
+Duration arithmetic is performed deterministically by Python.
 
-    output/Analysis/API/OpenAI_Usage.csv
+The Apple headline Screen Time value is retained as a reconciliation
+reference. Visible category time is the primary observed activity data.
 
-Canonical extractions are stored in:
+When the headline exceeds the visible category total, the difference is
+preserved as a derived "Apple Screen Time Unresolved" bucket. It is not
+classified as Off-Device.
 
-    output/Raw/AppleScreenTime/iPhone/YYYY-MM/YYYY-MM-DD/
+When visible categories exceed the headline, the date receives a
+reconciliation warning and the discrepancy is not silently forced.
 
-A date with no screenshots is PENDING and requires no API call.
+Original screenshots remain untouched.
 
-A date with exactly three supported images is READY.
-
-A date with any other number of supported images is INVALID.
-
-If screenshots change after canonical data already exists, the new
-extraction is saved as a candidate. Existing downstream data is never
-silently overwritten.
+Temporary OpenAI TPM rate limits are retried automatically. Billing,
+authentication, model, validation, and other non-rate-limit errors are
+not retried.
 """
 
 from __future__ import annotations
@@ -39,12 +38,15 @@ import hashlib
 import io
 import json
 import os
+import re
+import shutil
 import sys
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -64,12 +66,26 @@ RAW_OUTPUT = (
     / "iPhone"
 )
 
-API_USAGE_OUTPUT = (
+API_OUTPUT = (
     PROJECT_ROOT
     / "output"
     / "Analysis"
     / "API"
+)
+
+CURRENT_USAGE_LEDGER = (
+    API_OUTPUT
+    / "OpenAI_Usage_v2.csv"
+)
+
+LEGACY_USAGE_LEDGER = (
+    API_OUTPUT
     / "OpenAI_Usage.csv"
+)
+
+LEGACY_BACKUP_LEDGER = (
+    API_OUTPUT
+    / "OpenAI_Usage_legacy.csv"
 )
 
 SUPPORTED_IMAGE_TYPES = {
@@ -79,10 +95,15 @@ SUPPORTED_IMAGE_TYPES = {
     ".webp": "image/webp",
 }
 
-DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "")
+DEFAULT_MODEL = os.getenv(
+    "OPENAI_MODEL",
+    "",
+)
 
-# Current API pricing for gpt-4o-mini.
-MODEL_PRICING_USD_PER_MILLION: dict[str, dict[str, float]] = {
+MODEL_PRICING_USD_PER_MILLION: dict[
+    str,
+    dict[str, float],
+] = {
     "gpt-4o-mini": {
         "input": 0.15,
         "cached_input": 0.075,
@@ -95,19 +116,26 @@ MODEL_PRICING_USD_PER_MILLION: dict[str, dict[str, float]] = {
     },
 }
 
-# Screenshots are optimized only for transmission.
-# Originals remain untouched on disk.
 OPTIMIZED_MAX_DIMENSION = 1600
 OPTIMIZED_JPEG_QUALITY = 88
 
+MAX_RATE_LIMIT_RETRIES = 6
+DEFAULT_RATE_LIMIT_WAIT_SECONDS = 60.0
+MAX_RATE_LIMIT_WAIT_SECONDS = 90.0
+
+UNRESOLVED_CATEGORY_NAME = (
+    "Apple Screen Time Unresolved"
+)
+
 USAGE_FIELDS = (
     "timestamp_utc",
+    "ledger_version",
     "date",
     "status",
     "operation",
     "model",
     "api_calls_attempted",
-    "api_response_received",
+    "api_responses_received",
     "screenshot_count",
     "original_screenshot_bytes",
     "optimized_image_bytes",
@@ -160,9 +188,6 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
                 ],
             },
         },
-        "total_screen_time_sec": {
-            "type": "number",
-        },
         "total_screen_time_display": {
             "type": "string",
         },
@@ -175,16 +200,12 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
                     "apple_category": {
                         "type": "string",
                     },
-                    "duration_sec": {
-                        "type": "number",
-                    },
                     "duration_display": {
                         "type": "string",
                     },
                 },
                 "required": [
                     "apple_category",
-                    "duration_sec",
                     "duration_display",
                 ],
             },
@@ -198,16 +219,12 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
                     "app": {
                         "type": "string",
                     },
-                    "duration_sec": {
-                        "type": "number",
-                    },
                     "duration_display": {
                         "type": "string",
                     },
                 },
                 "required": [
                     "app",
-                    "duration_sec",
                     "duration_display",
                 ],
             },
@@ -225,7 +242,6 @@ EXTRACTION_SCHEMA: dict[str, Any] = {
     "required": [
         "date",
         "screenshot_roles",
-        "total_screen_time_sec",
         "total_screen_time_display",
         "categories",
         "social_apps",
@@ -241,8 +257,6 @@ system.
 
 You are given exactly three Apple Screen Time screenshots belonging to
 ONE calendar day.
-
-Filenames are arbitrary. Do NOT infer screenshot roles from filenames.
 
 Identify exactly one screenshot for each role:
 
@@ -260,46 +274,58 @@ For every screenshot return:
 - detected role;
 - confidence from 0.0 to 1.0.
 
+CRITICAL DURATION RULE:
+
+Return the duration EXACTLY as displayed in the screenshot.
+
+Examples:
+
+"2h 8m"
+"8m"
+"42s"
+"1h 23m"
+"39s"
+
+DO NOT convert durations to seconds.
+
+DO NOT perform arithmetic on durations.
+
+DO NOT interpret a value ending in "s" as minutes.
+
+The Python program will perform all duration conversion.
+
 TOTAL:
-- Extract the daily Screen Time total.
-- Convert the displayed duration to seconds.
+- Extract the displayed daily Screen Time string exactly.
 
 CATEGORIES:
-- Extract every visible Apple Screen Time category and duration.
+- Extract every visible Apple Screen Time category.
 - Preserve Apple's category names exactly as visible.
-- Convert durations to seconds.
+- Preserve the displayed duration exactly.
+- Do not infer missing categories.
 
 SOCIAL:
-- Extract every visible application and duration.
+- Extract every visible application and its displayed duration.
+- Preserve the application name exactly as visible.
+- Preserve the displayed duration exactly.
 - Determine whether the visible application list appears complete.
 - If the list is truncated or completeness cannot be established,
   set social_detail_complete to false.
-- Convert durations to seconds.
 
-IMPORTANT ACCOUNTING RULE:
+IMPORTANT:
 
 Social application durations are detail belonging to the Social
-category. They must NOT be added on top of category totals.
+category. They must NOT be added to the category totals.
 
-Do NOT add category totals and application totals together.
+Do not map applications or Apple categories into the project's
+master taxonomy.
 
-This stage performs EVIDENCE EXTRACTION ONLY.
+Do not invent values.
 
-Do NOT map applications or Apple categories into the project's master
-taxonomy.
-
-Do NOT invent values.
-
-Do not estimate a duration from chart size when readable text exists.
-
-If a value is unclear, use the most defensible visible value and add a
-warning.
+If a value is unclear, preserve the most defensible visible text and
+add a warning.
 
 If screenshots appear to conflict, preserve the visible evidence and
 add a warning.
-
-If a list appears truncated, preserve the visible entries and add a
-warning.
 
 The folder date is authoritative for the expected calendar date.
 
@@ -310,7 +336,10 @@ Return ONLY structured JSON matching the supplied schema.
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Extract Apple Screen Time screenshots with AI."
+        description=(
+            "Extract Apple Screen Time screenshots "
+            "with AI."
+        )
     )
 
     parser.add_argument(
@@ -321,25 +350,39 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument(
         "--date",
-        help="Process one date only.",
+        action="append",
+        dest="dates",
+        help=(
+            "Process one date. May be specified multiple "
+            "times for an explicit date list."
+        ),
     )
 
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help="OpenAI model. Can also be supplied through OPENAI_MODEL.",
+        help=(
+            "OpenAI model. Can also be supplied "
+            "through OPENAI_MODEL."
+        ),
     )
 
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Replace canonical extraction after successful processing.",
+        help=(
+            "Replace canonical extraction after "
+            "successful processing."
+        ),
     )
 
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate screenshot coverage without calling OpenAI.",
+        help=(
+            "Validate screenshot coverage without "
+            "calling OpenAI."
+        ),
     )
 
     return parser.parse_args()
@@ -373,7 +416,7 @@ def parse_date(value: str) -> date:
 
 
 def validate_model(model: str) -> str:
-    """Require a configured model."""
+    """Validate the configured model."""
     model = model.strip()
 
     if not model:
@@ -384,8 +427,9 @@ def validate_model(model: str) -> str:
 
     if model not in MODEL_PRICING_USD_PER_MILLION:
         raise RuntimeError(
-            f"No API pricing configuration exists for '{model}'. "
-            "Add current pricing before using this model."
+            f"No API pricing configuration exists "
+            f"for '{model}'. Add current pricing before "
+            "using this model."
         )
 
     return model
@@ -403,40 +447,51 @@ def create_client() -> OpenAI:
 
 def list_date_directories(
     month: str,
-    target_date: str | None,
+    target_dates: list[str] | None,
 ) -> list[Path]:
-    """Return date folders to inspect."""
+    """Return date directories to inspect."""
     parse_month(month)
 
-    month_directory = SCREEN_TIME_INPUT / month
+    month_directory = (
+        SCREEN_TIME_INPUT / month
+    )
 
     if not month_directory.exists():
         raise FileNotFoundError(
-            f"Missing Screen Time month directory: {month_directory}"
+            "Missing Screen Time month directory: "
+            f"{month_directory}"
         )
 
-    if target_date:
-        parsed = parse_date(target_date)
+    if target_dates:
+        directories: list[Path] = []
 
-        if parsed.strftime("%Y-%m") != month:
-            raise ValueError(
-                f"{target_date} is outside {month}."
+        for target_date in target_dates:
+            parsed = parse_date(target_date)
+
+            if parsed.strftime("%Y-%m") != month:
+                raise ValueError(
+                    f"{target_date} is outside {month}."
+                )
+
+            directory = (
+                month_directory / target_date
             )
 
-        directory = month_directory / target_date
-
-        if not directory.exists():
-            raise FileNotFoundError(
-                f"Missing Screen Time date directory: {directory}"
+            if not directory.exists():
+                raise FileNotFoundError(
+                    "Missing Screen Time date directory: "
+                    f"{directory}"
             )
 
-        return [directory]
+            directories.append(directory)
+
+        return directories
 
     return sorted(
         directory
         for directory in month_directory.iterdir()
         if directory.is_dir()
-        and directory.name[:7] == month
+        and directory.name.startswith(month)
     )
 
 
@@ -458,7 +513,7 @@ def discover_screenshots(
 def classify_screenshot_coverage(
     screenshots: tuple[Path, ...],
 ) -> str:
-    """Classify a date folder by screenshot count."""
+    """Classify screenshot coverage."""
     if len(screenshots) == 0:
         return "PENDING"
 
@@ -475,47 +530,66 @@ def calculate_content_hash(
     digest = hashlib.sha256()
 
     for path in screenshot_paths:
-        digest.update(path.name.encode("utf-8"))
-        digest.update(path.read_bytes())
+        digest.update(
+            path.name.encode("utf-8")
+        )
+        digest.update(
+            path.read_bytes()
+        )
 
     return digest.hexdigest()
 
 
-def calculate_file_hash(path: Path) -> str:
-    """Return a SHA-256 hash for one file."""
-    return hashlib.sha256(
-        path.read_bytes()
-    ).hexdigest()
+def calculate_file_hash(
+    path: Path,
+) -> str:
+    """Return a SHA-256 file hash."""
+    digest = hashlib.sha256()
+
+    with path.open("rb") as handle:
+        for chunk in iter(
+            lambda: handle.read(1024 * 1024),
+            b"",
+        ):
+            digest.update(chunk)
+
+    return digest.hexdigest()
 
 
 def output_paths(
     target_date: str,
 ) -> dict[str, Path]:
-    """Return output artifact paths."""
-    directory = (
+    """Return output paths for one date."""
+    date_directory = (
         RAW_OUTPUT
         / target_date[:7]
         / target_date
     )
 
-    directory.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
     return {
-        "extraction": directory / "AI_Extraction.json",
-        "metadata": directory / "AI_Metadata.json",
+        "directory": date_directory,
+        "extraction": (
+            date_directory
+            / "AI_Extraction.json"
+        ),
+        "metadata": (
+            date_directory
+            / "AI_Metadata.json"
+        ),
         "candidate_extraction": (
-            directory / "AI_Extraction_Candidate.json"
+            date_directory
+            / "AI_Extraction_Candidate.json"
         ),
         "candidate_metadata": (
-            directory / "AI_Metadata_Candidate.json"
+            date_directory
+            / "AI_Metadata_Candidate.json"
         ),
     }
 
 
-def load_json(path: Path) -> dict[str, Any]:
+def load_json(
+    path: Path,
+) -> dict[str, Any]:
     """Load a JSON object."""
     return json.loads(
         path.read_text(
@@ -548,7 +622,119 @@ def downstream_output_exists(
         / f"Daily_Time_{target_date}.csv"
     )
 
-    return fact_path.exists() or daily_path.exists()
+    return (
+        fact_path.exists()
+        or daily_path.exists()
+    )
+
+
+def duration_to_seconds(
+    duration: str,
+) -> int:
+    """Convert an Apple duration string to seconds."""
+    value = (
+        duration
+        .strip()
+        .lower()
+        .replace(" ", "")
+    )
+
+    if not value:
+        raise ValueError(
+            "Empty duration."
+        )
+
+    matches = re.findall(
+        r"(\d+)([hms])",
+        value,
+    )
+
+    if not matches:
+        raise ValueError(
+            f"Unsupported Apple duration: "
+            f"'{duration}'"
+        )
+
+    reconstructed = "".join(
+        f"{number}{unit}"
+        for number, unit in matches
+    )
+
+    if reconstructed != value:
+        raise ValueError(
+            f"Unsupported Apple duration: "
+            f"'{duration}'"
+        )
+
+    components = {
+        "h": 0,
+        "m": 0,
+        "s": 0,
+    }
+
+    for number, unit in matches:
+        if components[unit] != 0:
+            raise ValueError(
+                f"Duplicate duration component "
+                f"in '{duration}'."
+            )
+
+        components[unit] = int(number)
+
+    if components["m"] >= 60:
+        raise ValueError(
+            f"Invalid minutes in '{duration}'."
+        )
+
+    if components["s"] >= 60:
+        raise ValueError(
+            f"Invalid seconds in '{duration}'."
+        )
+
+    return (
+        components["h"] * 3600
+        + components["m"] * 60
+        + components["s"]
+    )
+
+
+def seconds_to_duration(
+    seconds: int,
+) -> str:
+    """Format seconds as a human-readable duration."""
+    if seconds < 0:
+        raise ValueError(
+            "Duration cannot be negative."
+        )
+
+    hours, remainder = divmod(
+        seconds,
+        3600,
+    )
+
+    minutes, seconds = divmod(
+        remainder,
+        60,
+    )
+
+    parts: list[str] = []
+
+    if hours:
+        parts.append(
+            f"{hours}h"
+        )
+
+    if minutes:
+        parts.append(
+            f"{minutes}m"
+        )
+
+    if seconds or not parts:
+        parts.append(
+            f"{seconds}s"
+        )
+
+    return " ".join(parts)
 
 
 def calculate_costs(
@@ -558,7 +744,11 @@ def calculate_costs(
     output_tokens: int,
 ) -> dict[str, float]:
     """Calculate estimated API costs."""
-    pricing = MODEL_PRICING_USD_PER_MILLION[model]
+    pricing = (
+        MODEL_PRICING_USD_PER_MILLION[
+            model
+        ]
+    )
 
     uncached_input_tokens = max(
         input_tokens - cached_input_tokens,
@@ -595,17 +785,17 @@ def calculate_costs(
     }
 
 
-def ensure_usage_ledger() -> None:
-    """Create the API usage ledger if necessary."""
-    API_USAGE_OUTPUT.parent.mkdir(
+def ensure_current_usage_ledger() -> None:
+    """Create the current usage ledger."""
+    API_OUTPUT.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    if API_USAGE_OUTPUT.exists():
+    if CURRENT_USAGE_LEDGER.exists():
         return
 
-    with API_USAGE_OUTPUT.open(
+    with CURRENT_USAGE_LEDGER.open(
         "w",
         encoding="utf-8",
         newline="",
@@ -617,6 +807,20 @@ def ensure_usage_ledger() -> None:
         writer.writeheader()
 
 
+def preserve_legacy_ledger() -> None:
+    """Preserve the old ledger without modifying it."""
+    if not LEGACY_USAGE_LEDGER.exists():
+        return
+
+    if LEGACY_BACKUP_LEDGER.exists():
+        return
+
+    shutil.copy2(
+        LEGACY_USAGE_LEDGER,
+        LEGACY_BACKUP_LEDGER,
+    )
+
+
 def append_usage_record(
     *,
     target_date: str,
@@ -624,7 +828,7 @@ def append_usage_record(
     operation: str,
     model: str,
     api_calls_attempted: int,
-    api_response_received: int,
+    api_responses_received: int,
     screenshot_count: int,
     original_screenshot_bytes: int,
     optimized_image_bytes: int,
@@ -635,8 +839,8 @@ def append_usage_record(
     error_type: str = "",
     error_message: str = "",
 ) -> float:
-    """Append one auditable API usage record."""
-    ensure_usage_ledger()
+    """Append one API usage record."""
+    ensure_current_usage_ledger()
 
     total_tokens = (
         input_tokens
@@ -644,10 +848,12 @@ def append_usage_record(
     )
 
     costs = calculate_costs(
-        model,
-        input_tokens,
-        cached_input_tokens,
-        output_tokens,
+        model=model,
+        input_tokens=input_tokens,
+        cached_input_tokens=(
+            cached_input_tokens
+        ),
+        output_tokens=output_tokens,
     )
 
     row = {
@@ -655,12 +861,17 @@ def append_usage_record(
             datetime.now(timezone.utc)
             .isoformat()
         ),
+        "ledger_version": "2",
         "date": target_date,
         "status": status,
         "operation": operation,
         "model": model,
-        "api_calls_attempted": api_calls_attempted,
-        "api_response_received": api_response_received,
+        "api_calls_attempted": (
+            api_calls_attempted
+        ),
+        "api_responses_received": (
+            api_responses_received
+        ),
         "screenshot_count": screenshot_count,
         "original_screenshot_bytes": (
             original_screenshot_bytes
@@ -669,7 +880,9 @@ def append_usage_record(
             optimized_image_bytes
         ),
         "input_tokens": input_tokens,
-        "cached_input_tokens": cached_input_tokens,
+        "cached_input_tokens": (
+            cached_input_tokens
+        ),
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "estimated_input_cost_usd": (
@@ -689,7 +902,7 @@ def append_usage_record(
         "error_message": error_message,
     }
 
-    with API_USAGE_OUTPUT.open(
+    with CURRENT_USAGE_LEDGER.open(
         "a",
         encoding="utf-8",
         newline="",
@@ -703,9 +916,9 @@ def append_usage_record(
     return costs["total"]
 
 
-def read_usage_summary() -> dict[str, float]:
-    """Read cumulative API usage from the ledger."""
-    if not API_USAGE_OUTPUT.exists():
+def read_current_usage_summary() -> dict[str, float]:
+    """Read the current usage ledger."""
+    if not CURRENT_USAGE_LEDGER.exists():
         return {
             "attempted": 0,
             "responses": 0,
@@ -724,7 +937,7 @@ def read_usage_summary() -> dict[str, float]:
     total_tokens = 0
     cost = 0.0
 
-    with API_USAGE_OUTPUT.open(
+    with CURRENT_USAGE_LEDGER.open(
         "r",
         encoding="utf-8",
         newline="",
@@ -733,31 +946,58 @@ def read_usage_summary() -> dict[str, float]:
 
         for row in reader:
             attempted += int(
-                row.get("api_calls_attempted") or 0
+                row.get(
+                    "api_calls_attempted",
+                    0,
+                )
+                or 0
             )
 
             responses += int(
-                row.get("api_response_received") or 0
+                row.get(
+                    "api_responses_received",
+                    0,
+                )
+                or 0
             )
 
             input_tokens += int(
-                row.get("input_tokens") or 0
+                row.get(
+                    "input_tokens",
+                    0,
+                )
+                or 0
             )
 
             cached_input_tokens += int(
-                row.get("cached_input_tokens") or 0
+                row.get(
+                    "cached_input_tokens",
+                    0,
+                )
+                or 0
             )
 
             output_tokens += int(
-                row.get("output_tokens") or 0
+                row.get(
+                    "output_tokens",
+                    0,
+                )
+                or 0
             )
 
             total_tokens += int(
-                row.get("total_tokens") or 0
+                row.get(
+                    "total_tokens",
+                    0,
+                )
+                or 0
             )
 
             cost += float(
-                row.get("estimated_total_cost_usd")
+                row.get(
+                    "estimated_total_cost_usd",
+                    0,
+                )
                 or 0
             )
 
@@ -765,10 +1005,72 @@ def read_usage_summary() -> dict[str, float]:
         "attempted": attempted,
         "responses": responses,
         "input_tokens": input_tokens,
-        "cached_input_tokens": cached_input_tokens,
+        "cached_input_tokens": (
+            cached_input_tokens
+        ),
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "cost": cost,
+    }
+
+
+def read_legacy_usage_summary() -> dict[str, Any]:
+    """Read best-effort legacy usage information."""
+    if not LEGACY_USAGE_LEDGER.exists():
+        return {
+            "exists": False,
+            "rows": 0,
+            "cost": None,
+        }
+
+    rows = 0
+    cost_values: list[float] = []
+
+    try:
+        with LEGACY_USAGE_LEDGER.open(
+            "r",
+            encoding="utf-8",
+            newline="",
+        ) as handle:
+            reader = csv.DictReader(handle)
+
+            if reader.fieldnames is None:
+                return {
+                    "exists": True,
+                    "rows": 0,
+                    "cost": None,
+                }
+
+            for row in reader:
+                rows += 1
+
+                value = row.get(
+                    "estimated_total_cost_usd"
+                )
+
+                if value:
+                    try:
+                        cost_values.append(
+                            float(value)
+                        )
+                    except ValueError:
+                        pass
+
+    except (OSError, csv.Error):
+        return {
+            "exists": True,
+            "rows": rows,
+            "cost": None,
+        }
+
+    return {
+        "exists": True,
+        "rows": rows,
+        "cost": (
+            sum(cost_values)
+            if cost_values
+            else None
+        ),
     }
 
 
@@ -780,25 +1082,38 @@ def optimize_image(
         from PIL import Image
     except ImportError as exc:
         raise RuntimeError(
-            "Pillow is required for screenshot optimization. "
-            "Install it with: python -m pip install Pillow"
+            "Pillow is required for screenshot "
+            "optimization. Install it with: "
+            "python -m pip install Pillow"
         ) from exc
 
     with Image.open(path) as image:
         image = image.convert("RGB")
 
         width, height = image.size
-        largest_dimension = max(width, height)
+        largest_dimension = max(
+            width,
+            height,
+        )
 
-        if largest_dimension > OPTIMIZED_MAX_DIMENSION:
+        if (
+            largest_dimension
+            > OPTIMIZED_MAX_DIMENSION
+        ):
             scale = (
                 OPTIMIZED_MAX_DIMENSION
                 / largest_dimension
             )
 
             new_size = (
-                max(1, round(width * scale)),
-                max(1, round(height * scale)),
+                max(
+                    1,
+                    round(width * scale),
+                ),
+                max(
+                    1,
+                    round(height * scale),
+                ),
             )
 
             image = image.resize(
@@ -825,7 +1140,7 @@ def image_bytes_to_data_url(
     image_bytes: bytes,
     media_type: str,
 ) -> str:
-    """Convert optimized image bytes to a data URL."""
+    """Convert image bytes to a data URL."""
     encoded = base64.b64encode(
         image_bytes
     ).decode("ascii")
@@ -837,8 +1152,11 @@ def image_bytes_to_data_url(
 
 def prepare_images(
     screenshots: tuple[Path, ...],
-) -> tuple[list[tuple[Path, bytes, str]], int]:
-    """Prepare optimized images for one API request."""
+) -> tuple[
+    list[tuple[Path, bytes, str]],
+    int,
+]:
+    """Prepare optimized images."""
     prepared: list[
         tuple[Path, bytes, str]
     ] = []
@@ -846,8 +1164,8 @@ def prepare_images(
     total_bytes = 0
 
     for path in screenshots:
-        image_bytes, media_type = optimize_image(
-            path
+        image_bytes, media_type = (
+            optimize_image(path)
         )
 
         prepared.append(
@@ -860,7 +1178,10 @@ def prepare_images(
 
         total_bytes += len(image_bytes)
 
-    return prepared, total_bytes
+    return (
+        prepared,
+        total_bytes,
+    )
 
 
 def get_usage_value(
@@ -868,7 +1189,7 @@ def get_usage_value(
     attribute: str,
     default: int = 0,
 ) -> int:
-    """Read an integer usage value from an SDK usage object."""
+    """Read an integer usage value."""
     value = getattr(
         usage,
         attribute,
@@ -884,7 +1205,7 @@ def get_usage_value(
 def get_cached_input_tokens(
     usage: Any,
 ) -> int:
-    """Read cached input token usage when available."""
+    """Read cached input tokens."""
     prompt_details = getattr(
         usage,
         "prompt_tokens_details",
@@ -913,13 +1234,119 @@ def get_cached_input_tokens(
     return int(cached_tokens)
 
 
+def get_rate_limit_retry_seconds(
+    exc: RateLimitError,
+    retry_number: int,
+) -> float:
+    """Determine a bounded wait for a temporary rate limit."""
+    response = getattr(
+        exc,
+        "response",
+        None,
+    )
+
+    if response is not None:
+        headers = getattr(
+            response,
+            "headers",
+            None,
+        )
+
+        if headers:
+            retry_after = headers.get(
+                "retry-after"
+            )
+
+            if retry_after:
+                try:
+                    return min(
+                        max(
+                            float(retry_after),
+                            0.0,
+                        ),
+                        MAX_RATE_LIMIT_WAIT_SECONDS,
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    pass
+
+    message = str(exc)
+
+    marker = "Please try again in "
+
+    if marker in message:
+        remainder = message.split(
+            marker,
+            1,
+        )[1]
+
+        match = re.search(
+            r"([\d.]+)\s*ms",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            milliseconds = float(
+                match.group(1)
+            )
+
+            return min(
+                max(
+                    milliseconds / 1000.0,
+                    0.0,
+                ),
+                MAX_RATE_LIMIT_WAIT_SECONDS,
+            )
+
+        match = re.search(
+            r"([\d.]+)\s*s",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            seconds = float(
+                match.group(1)
+            )
+
+            return min(
+                max(seconds, 0.0),
+                MAX_RATE_LIMIT_WAIT_SECONDS,
+            )
+
+    exponential_wait = (
+        DEFAULT_RATE_LIMIT_WAIT_SECONDS
+        * (
+            2
+            ** max(
+                retry_number - 1,
+                0,
+            )
+        )
+    )
+
+    return min(
+        exponential_wait,
+        MAX_RATE_LIMIT_WAIT_SECONDS,
+    )
+
+
 def extract_with_ai(
     client: OpenAI,
-    prepared_images: list[tuple[Path, bytes, str]],
+    prepared_images: list[
+        tuple[Path, bytes, str]
+    ],
     target_date: str,
     model: str,
-) -> tuple[dict[str, Any], Any]:
-    """Send optimized screenshots to the vision model."""
+) -> tuple[
+    dict[str, Any],
+    Any,
+    int,
+]:
+    """Send screenshots to the vision model with rate-limit retries."""
     content: list[dict[str, Any]] = [
         {
             "type": "input_text",
@@ -931,12 +1358,17 @@ def extract_with_ai(
         }
     ]
 
-    for path, image_bytes, media_type in prepared_images:
+    for (
+        path,
+        image_bytes,
+        media_type,
+    ) in prepared_images:
         content.append(
             {
                 "type": "input_text",
                 "text": (
-                    f"Original filename: {path.name}"
+                    f"Original filename: "
+                    f"{path.name}"
                 ),
             }
         )
@@ -944,50 +1376,89 @@ def extract_with_ai(
         content.append(
             {
                 "type": "input_image",
-                "image_url": image_bytes_to_data_url(
-                    image_bytes,
-                    media_type,
+                "image_url": (
+                    image_bytes_to_data_url(
+                        image_bytes,
+                        media_type,
+                    )
                 ),
                 "detail": "high",
             }
         )
 
-    response = client.responses.create(
-        model=model,
-        input=[
-            {
-                "role": "user",
-                "content": content,
-            }
-        ],
-        store=False,
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "apple_screen_time_extraction",
-                "strict": True,
-                "schema": EXTRACTION_SCHEMA,
-            }
-        },
+    for attempt in range(
+        1,
+        MAX_RATE_LIMIT_RETRIES + 1,
+    ):
+        try:
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {
+                        "role": "user",
+                        "content": content,
+                    }
+                ],
+                store=False,
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": (
+                            "apple_screen_time_extraction"
+                        ),
+                        "strict": True,
+                        "schema": EXTRACTION_SCHEMA,
+                    }
+                },
+            )
+
+            output_text = response.output_text
+
+            if not output_text:
+                raise RuntimeError(
+                    "OpenAI returned an empty extraction."
+                )
+
+            try:
+                extraction = json.loads(
+                    output_text
+                )
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "OpenAI returned invalid JSON."
+                ) from exc
+
+            return (
+                extraction,
+                response,
+                attempt,
+            )
+
+        except RateLimitError as exc:
+            if attempt >= MAX_RATE_LIMIT_RETRIES:
+                raise
+
+            wait_seconds = (
+                get_rate_limit_retry_seconds(
+                    exc,
+                    attempt,
+                )
+            )
+
+            print(
+                f"{target_date} | RATE LIMIT | "
+                f"attempt={attempt}/"
+                f"{MAX_RATE_LIMIT_RETRIES} | "
+                f"waiting={wait_seconds:.1f}s"
+            )
+
+            time.sleep(
+                wait_seconds
+            )
+
+    raise RuntimeError(
+        "OpenAI extraction retry loop exited unexpectedly."
     )
-
-    output_text = response.output_text
-
-    if not output_text:
-        raise RuntimeError(
-            "OpenAI returned an empty extraction."
-        )
-
-    try:
-        extraction = json.loads(
-            output_text
-        )
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            "OpenAI returned invalid JSON."
-        ) from exc
-
-    return extraction, response
 
 
 def validate_screenshot_roles(
@@ -1015,7 +1486,8 @@ def validate_screenshot_roles(
 
     if len(role_entries) != 3:
         raise ValueError(
-            "AI did not return exactly three screenshot roles."
+            "AI did not return exactly three "
+            "screenshot roles."
         )
 
     actual_filenames = {
@@ -1023,10 +1495,13 @@ def validate_screenshot_roles(
         for entry in role_entries
     }
 
-    if actual_filenames != expected_filenames:
+    if (
+        actual_filenames
+        != expected_filenames
+    ):
         raise ValueError(
-            "AI screenshot filenames do not match "
-            "the supplied files."
+            "AI screenshot filenames do not "
+            "match the supplied files."
         )
 
     roles = [
@@ -1059,14 +1534,72 @@ def validate_screenshot_roles(
 
         if not 0 <= confidence <= 1:
             raise ValueError(
-                "Screenshot confidence must be between 0 and 1."
+                "Screenshot confidence must be "
+                "between 0 and 1."
             )
 
 
-def validate_extraction_values(
+def normalize_extraction(
     extraction: dict[str, Any],
-) -> list[str]:
-    """Validate values and return non-fatal warnings."""
+) -> dict[str, Any]:
+    """Convert AI display durations into deterministic seconds."""
+    normalized = json.loads(
+        json.dumps(extraction)
+    )
+
+    total_display = str(
+        normalized[
+            "total_screen_time_display"
+        ]
+    )
+
+    total_seconds = (
+        duration_to_seconds(
+            total_display
+        )
+    )
+
+    normalized[
+        "total_screen_time_sec"
+    ] = total_seconds
+
+    for category in normalized[
+        "categories"
+    ]:
+        display = str(
+            category[
+                "duration_display"
+            ]
+        )
+
+        category[
+            "duration_sec"
+        ] = duration_to_seconds(
+            display
+        )
+
+    for app in normalized[
+        "social_apps"
+    ]:
+        display = str(
+            app[
+                "duration_display"
+            ]
+        )
+
+        app[
+            "duration_sec"
+        ] = duration_to_seconds(
+            display
+        )
+
+    return normalized
+
+
+def validate_and_reconcile(
+    extraction: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate normalized evidence and derive reconciliation data."""
     warnings = [
         str(warning)
         for warning in extraction.get(
@@ -1075,20 +1608,34 @@ def validate_extraction_values(
         )
     ]
 
-    total = float(
-        extraction["total_screen_time_sec"]
+    total_seconds = int(
+        extraction[
+            "total_screen_time_sec"
+        ]
     )
 
-    if total < 0:
+    if total_seconds < 0:
         raise ValueError(
             "Total Screen Time cannot be negative."
         )
 
-    category_total = 0.0
+    categories = extraction[
+        "categories"
+    ]
 
-    for category in extraction["categories"]:
-        duration = float(
-            category["duration_sec"]
+    if not categories:
+        raise ValueError(
+            "No Apple Screen Time categories "
+            "were extracted."
+        )
+
+    category_total = 0
+
+    for category in categories:
+        duration = int(
+            category[
+                "duration_sec"
+            ]
         )
 
         if duration < 0:
@@ -1100,173 +1647,297 @@ def validate_extraction_values(
 
     if category_total <= 0:
         raise ValueError(
-            "No positive category time was extracted."
+            "Visible category time is zero."
         )
 
-    if category_total > total + 120:
+    difference = (
+        total_seconds
+        - category_total
+    )
+
+    reconciliation_status = (
+        "MATCH"
+    )
+
+    unresolved_seconds = 0
+
+    if difference > 0:
+        reconciliation_status = (
+            "HEADLINE_EXCEEDS_VISIBLE_CATEGORIES"
+        )
+
+        unresolved_seconds = difference
+
         warnings.append(
-            "Visible category total exceeds total Screen Time "
-            "by more than two minutes."
+            "Apple headline Screen Time exceeds "
+            "the visible category total. The "
+            f"difference of "
+            f"{seconds_to_duration(difference)} "
+            "is preserved as derived Apple "
+            "Screen Time Unresolved time."
         )
 
-    if total > category_total + 120:
+    elif difference < 0:
+        reconciliation_status = (
+            "VISIBLE_CATEGORIES_EXCEED_HEADLINE"
+        )
+
         warnings.append(
-            "Visible category total is more than two minutes "
-            "below total Screen Time."
+            "Visible Apple category time exceeds "
+            "the headline Screen Time by "
+            f"{seconds_to_duration(abs(difference))}. "
+            "The discrepancy is preserved as an "
+            "Apple reconciliation anomaly and is "
+            "not converted into additional time."
         )
 
-    social_category = next(
+    social_category_seconds = next(
         (
-            float(category["duration_sec"])
-            for category in extraction["categories"]
-            if category["apple_category"].strip().lower()
-            == "social"
+            int(
+                category[
+                    "duration_sec"
+                ]
+            )
+            for category in categories
+            if (
+                category[
+                    "apple_category"
+                ]
+                .strip()
+                .lower()
+                == "social"
+            )
         ),
         None,
     )
 
-    if social_category is not None:
-        social_total = sum(
-            float(app["duration_sec"])
-            for app in extraction["social_apps"]
+    social_app_seconds = sum(
+        int(
+            app[
+                "duration_sec"
+            ]
+        )
+        for app in extraction[
+            "social_apps"
+        ]
+    )
+
+    social_difference: int | None = None
+
+    if social_category_seconds is not None:
+        social_difference = (
+            social_category_seconds
+            - social_app_seconds
         )
 
         if (
-            extraction["social_detail_complete"]
-            and social_total > social_category + 120
+            extraction[
+                "social_detail_complete"
+            ]
+            and social_difference != 0
         ):
             warnings.append(
-                "Visible Social app detail exceeds the "
-                "Social category total. Preserved for review."
+                "Visible Social app detail does "
+                "not exactly reconcile to the Social "
+                "category total. Social category time "
+                "remains authoritative; app detail is "
+                "supplemental evidence."
             )
 
-        if (
-            extraction["social_detail_complete"]
-            and social_category > social_total + 120
-        ):
-            warnings.append(
-                "Visible Social app detail does not fully "
-                "reconcile to the Social category total."
-            )
+    extraction[
+        "category_total_sec"
+    ] = category_total
+
+    extraction[
+        "category_total_display"
+    ] = seconds_to_duration(
+        category_total
+    )
+
+    extraction[
+        "reconciliation_difference_sec"
+    ] = difference
+
+    extraction[
+        "reconciliation_difference_display"
+    ] = seconds_to_duration(
+        abs(difference)
+    )
+
+    extraction[
+        "reconciliation_status"
+    ] = reconciliation_status
+
+    extraction[
+        "unresolved_screen_time_sec"
+    ] = unresolved_seconds
+
+    extraction[
+        "unresolved_screen_time_display"
+    ] = seconds_to_duration(
+        unresolved_seconds
+    )
+
+    extraction[
+        "unresolved_screen_time_allocation_type"
+    ] = (
+        "Derived"
+        if unresolved_seconds
+        else None
+    )
+
+    extraction[
+        "unresolved_screen_time_category"
+    ] = (
+        UNRESOLVED_CATEGORY_NAME
+        if unresolved_seconds
+        else None
+    )
+
+    extraction[
+        "unresolved_screen_time_evidence"
+    ] = (
+        "Reconciliation difference between "
+        "Apple headline Screen Time and visible "
+        "category totals."
+        if unresolved_seconds
+        else None
+    )
+
+    extraction[
+        "social_app_total_sec"
+    ] = social_app_seconds
+
+    extraction[
+        "social_app_total_display"
+    ] = seconds_to_duration(
+        social_app_seconds
+    )
+
+    extraction[
+        "social_category_difference_sec"
+    ] = social_difference
+
+    extraction[
+        "social_category_difference_display"
+    ] = (
+        seconds_to_duration(
+            abs(social_difference)
+        )
+        if social_difference is not None
+        else None
+    )
 
     extraction["warnings"] = list(
         dict.fromkeys(warnings)
     )
 
-    return extraction["warnings"]
+    return extraction
 
 
-def save_canonical(
-    target_date: str,
-    extraction: dict[str, Any],
-    content_hash: str,
-    model: str,
-    screenshots: tuple[Path, ...],
-    *,
-    input_tokens: int,
-    output_tokens: int,
-    cached_input_tokens: int,
-    estimated_cost_usd: float,
+def save_json(
+    path: Path,
+    payload: dict[str, Any],
 ) -> None:
-    """Save a canonical extraction and metadata."""
-    paths = output_paths(target_date)
+    """Save formatted JSON."""
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    paths["extraction"].write_text(
+    path.write_text(
         json.dumps(
-            extraction,
+            payload,
             indent=2,
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
 
-    paths["metadata"].write_text(
-        json.dumps(
+
+def build_metadata(
+    *,
+    target_date: str,
+    status: str,
+    content_hash: str,
+    model: str,
+    screenshots: tuple[Path, ...],
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int,
+    estimated_cost_usd: float,
+    api_calls_attempted: int,
+) -> dict[str, Any]:
+    """Build canonical metadata."""
+    return {
+        "date": target_date,
+        "status": status,
+        "content_hash": content_hash,
+        "model": model,
+        "usage": {
+            "api_calls_attempted": (
+                api_calls_attempted
+            ),
+            "api_responses_received": 1,
+            "input_tokens": input_tokens,
+            "cached_input_tokens": (
+                cached_input_tokens
+            ),
+            "output_tokens": output_tokens,
+            "estimated_cost_usd": (
+                estimated_cost_usd
+            ),
+        },
+        "screenshots": [
             {
-                "date": target_date,
-                "status": "canonical",
-                "content_hash": content_hash,
-                "model": model,
-                "usage": {
-                    "input_tokens": input_tokens,
-                    "cached_input_tokens": (
-                        cached_input_tokens
-                    ),
-                    "output_tokens": output_tokens,
-                    "estimated_cost_usd": (
-                        estimated_cost_usd
-                    ),
-                },
-                "screenshots": [
-                    {
-                        "filename": path.name,
-                        "size_bytes": path.stat().st_size,
-                        "sha256": calculate_file_hash(path),
-                    }
-                    for path in screenshots
-                ],
-            },
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+                "filename": path.name,
+                "size_bytes": path.stat().st_size,
+                "sha256": (
+                    calculate_file_hash(
+                        path
+                    )
+                ),
+            }
+            for path in screenshots
+        ],
+    }
+
+
+def save_canonical(
+    target_date: str,
+    extraction: dict[str, Any],
+    metadata: dict[str, Any],
+) -> None:
+    """Save canonical extraction."""
+    paths = output_paths(target_date)
+
+    save_json(
+        paths["extraction"],
+        extraction,
+    )
+
+    save_json(
+        paths["metadata"],
+        metadata,
     )
 
 
 def save_candidate(
     target_date: str,
     extraction: dict[str, Any],
-    content_hash: str,
-    model: str,
-    screenshots: tuple[Path, ...],
-    *,
-    input_tokens: int,
-    output_tokens: int,
-    cached_input_tokens: int,
-    estimated_cost_usd: float,
+    metadata: dict[str, Any],
 ) -> None:
-    """Save a changed extraction as a review candidate."""
+    """Save candidate extraction."""
     paths = output_paths(target_date)
 
-    paths["candidate_extraction"].write_text(
-        json.dumps(
-            extraction,
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    save_json(
+        paths["candidate_extraction"],
+        extraction,
     )
 
-    paths["candidate_metadata"].write_text(
-        json.dumps(
-            {
-                "date": target_date,
-                "status": "candidate",
-                "content_hash": content_hash,
-                "model": model,
-                "usage": {
-                    "input_tokens": input_tokens,
-                    "cached_input_tokens": (
-                        cached_input_tokens
-                    ),
-                    "output_tokens": output_tokens,
-                    "estimated_cost_usd": (
-                        estimated_cost_usd
-                    ),
-                },
-                "screenshots": [
-                    {
-                        "filename": path.name,
-                        "size_bytes": path.stat().st_size,
-                        "sha256": calculate_file_hash(path),
-                    }
-                    for path in screenshots
-                ],
-            },
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    save_json(
+        paths["candidate_metadata"],
+        metadata,
     )
 
 
@@ -1277,15 +1948,17 @@ def process_date(
     force: bool,
     dry_run: bool,
 ) -> str:
-    """Validate or process one date."""
+    """Process one Screen Time date."""
     target_date = date_directory.name
 
     screenshots = discover_screenshots(
         date_directory
     )
 
-    coverage_status = classify_screenshot_coverage(
-        screenshots
+    coverage_status = (
+        classify_screenshot_coverage(
+            screenshots
+        )
     )
 
     if coverage_status == "PENDING":
@@ -1303,8 +1976,10 @@ def process_date(
         )
         return "INVALID"
 
-    content_hash = calculate_content_hash(
-        screenshots
+    content_hash = (
+        calculate_content_hash(
+            screenshots
+        )
     )
 
     paths = output_paths(target_date)
@@ -1317,7 +1992,8 @@ def process_date(
     if dry_run:
         print(
             f"{target_date} | READY | "
-            "3 screenshots validated | 0 API calls"
+            "3 screenshots validated | "
+            "0 API calls"
         )
 
         for path in screenshots:
@@ -1333,10 +2009,14 @@ def process_date(
             paths["metadata"]
         )
 
-        if metadata.get("content_hash") == content_hash:
+        if (
+            metadata.get("content_hash")
+            == content_hash
+        ):
             print(
                 f"{target_date} | UNCHANGED | "
-                "cached extraction reused | 0 API calls"
+                "cached extraction reused | "
+                "0 API calls"
             )
             return "UNCHANGED"
 
@@ -1360,19 +2040,19 @@ def process_date(
         f"optimized={optimized_bytes:,} bytes"
     )
 
-    api_response_received = False
-    extraction: dict[str, Any] | None = None
-    response: Any = None
+    api_attempts = 0
 
     try:
-        extraction, response = extract_with_ai(
+        (
+            extraction,
+            response,
+            api_attempts,
+        ) = extract_with_ai(
             client,
             prepared_images,
             target_date,
             model,
         )
-
-        api_response_received = True
 
         usage = getattr(
             response,
@@ -1382,7 +2062,8 @@ def process_date(
 
         if usage is None:
             raise RuntimeError(
-                "OpenAI response did not contain usage data."
+                "OpenAI response did not contain "
+                "usage data."
             )
 
         input_tokens = get_usage_value(
@@ -1396,72 +2077,75 @@ def process_date(
         )
 
         cached_input_tokens = (
-            get_cached_input_tokens(usage)
+            get_cached_input_tokens(
+                usage
+            )
         )
 
         costs = calculate_costs(
-            model,
-            input_tokens,
-            cached_input_tokens,
-            output_tokens,
+            model=model,
+            input_tokens=input_tokens,
+            cached_input_tokens=(
+                cached_input_tokens
+            ),
+            output_tokens=output_tokens,
         )
 
-        warnings: list[str] = []
-
-        try:
-            validate_screenshot_roles(
-                extraction,
-                screenshots,
-                target_date,
-            )
-
-            warnings.extend(
-                validate_extraction_values(
-                    extraction
-                )
-            )
-
-        except ValueError as validation_error:
-            warnings.append(
-                "Extraction validation warning: "
-                + str(validation_error)
-            )
-
-        extraction["warnings"] = list(
-            dict.fromkeys(
-                [
-                    *extraction.get(
-                        "warnings",
-                        [],
-                    ),
-                    *warnings,
-                ]
-            )
+        validate_screenshot_roles(
+            extraction,
+            screenshots,
+            target_date,
         )
 
-        if warnings:
-            extraction_status = "API_SUCCESS_REVIEW"
-        else:
-            extraction_status = "API_SUCCESS_VALID"
+        normalized = normalize_extraction(
+            extraction
+        )
+
+        normalized = validate_and_reconcile(
+            normalized
+        )
+
+        warnings = normalized[
+            "warnings"
+        ]
+
+        status = (
+            "API_SUCCESS_REVIEW"
+            if warnings
+            else "API_SUCCESS_VALID"
+        )
 
         append_usage_record(
             target_date=target_date,
-            status=extraction_status,
-            operation="screen_time_extraction",
+            status=status,
+            operation=(
+                "screen_time_extraction"
+            ),
             model=model,
-            api_calls_attempted=1,
-            api_response_received=1,
-            screenshot_count=len(screenshots),
-            original_screenshot_bytes=original_bytes,
-            optimized_image_bytes=optimized_bytes,
+            api_calls_attempted=(
+                api_attempts
+            ),
+            api_responses_received=1,
+            screenshot_count=len(
+                screenshots
+            ),
+            original_screenshot_bytes=(
+                original_bytes
+            ),
+            optimized_image_bytes=(
+                optimized_bytes
+            ),
             content_hash=content_hash,
             input_tokens=input_tokens,
-            cached_input_tokens=cached_input_tokens,
+            cached_input_tokens=(
+                cached_input_tokens
+            ),
             output_tokens=output_tokens,
         )
 
         print(
             f"{target_date} | API USAGE | "
+            f"attempts={api_attempts} | "
             f"input={input_tokens:,} | "
             f"cached={cached_input_tokens:,} | "
             f"output={output_tokens:,} | "
@@ -1470,7 +2154,8 @@ def process_date(
 
         if warnings:
             print(
-                f"{target_date} | REVIEW WARNINGS | "
+                f"{target_date} | "
+                f"REVIEW WARNINGS | "
                 f"{len(warnings)}"
             )
 
@@ -1479,28 +2164,37 @@ def process_date(
                     f"  WARNING: {warning}"
                 )
 
+        metadata = build_metadata(
+            target_date=target_date,
+            status="canonical",
+            content_hash=content_hash,
+            model=model,
+            screenshots=screenshots,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=(
+                cached_input_tokens
+            ),
+            estimated_cost_usd=(
+                costs["total"]
+            ),
+            api_calls_attempted=(
+                api_attempts
+            ),
+        )
+
         if not canonical_exists:
             save_canonical(
                 target_date,
-                extraction,
-                content_hash,
-                model,
-                screenshots,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cached_input_tokens=(
-                    cached_input_tokens
-                ),
-                estimated_cost_usd=(
-                    costs["total"]
-                ),
+                normalized,
+                metadata,
             )
 
             if warnings:
                 print(
                     f"{target_date} | NEW+REVIEW | "
                     "canonical extraction created "
-                    "with warnings"
+                    "with deterministic reconciliation"
                 )
                 return "REVIEW"
 
@@ -1510,137 +2204,158 @@ def process_date(
             )
             return "NEW"
 
-        if (
-            not force
-            and downstream_output_exists(target_date)
-        ):
-            save_candidate(
-                target_date,
-                extraction,
-                content_hash,
-                model,
-                screenshots,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cached_input_tokens=(
-                    cached_input_tokens
-                ),
-                estimated_cost_usd=(
-                    costs["total"]
-                ),
-            )
+        metadata["status"] = "candidate"
 
+        save_candidate(
+            target_date,
+            normalized,
+            metadata,
+        )
+
+        if downstream_output_exists(
+            target_date
+        ):
             print(
                 f"{target_date} | REVIEW | "
-                "screenshots changed; canonical data preserved"
+                "changed extraction saved as "
+                "candidate because downstream "
+                "data already exists"
             )
-
             return "REVIEW"
 
-        if not force:
-            save_candidate(
+        if force:
+            metadata["status"] = "canonical"
+
+            save_canonical(
                 target_date,
-                extraction,
-                content_hash,
-                model,
-                screenshots,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cached_input_tokens=(
-                    cached_input_tokens
-                ),
-                estimated_cost_usd=(
-                    costs["total"]
-                ),
+                normalized,
+                metadata,
             )
 
             print(
-                f"{target_date} | CHANGED | "
-                "candidate extraction created"
+                f"{target_date} | REPLACED | "
+                "canonical extraction updated"
             )
 
-            return "CHANGED"
-
-        save_canonical(
-            target_date,
-            extraction,
-            content_hash,
-            model,
-            screenshots,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_input_tokens=(
-                cached_input_tokens
-            ),
-            estimated_cost_usd=(
-                costs["total"]
-            ),
-        )
+            return "REPLACED"
 
         print(
-            f"{target_date} | REPLACED | "
-            "canonical extraction updated"
+            f"{target_date} | CHANGED | "
+            "candidate extraction created"
         )
 
-        return "REPLACED"
+        return "CHANGED"
 
     except Exception as exc:
-        if not api_response_received:
-            append_usage_record(
-                target_date=target_date,
-                status="API_FAILED",
-                operation="screen_time_extraction",
-                model=model,
-                api_calls_attempted=1,
-                api_response_received=0,
-                screenshot_count=len(screenshots),
-                original_screenshot_bytes=original_bytes,
-                optimized_image_bytes=optimized_bytes,
-                content_hash=content_hash,
-                error_type=type(exc).__name__,
-                error_message=str(exc),
-            )
+        append_usage_record(
+            target_date=target_date,
+            status="API_FAILED",
+            operation=(
+                "screen_time_extraction"
+            ),
+            model=model,
+            api_calls_attempted=max(
+                api_attempts,
+                1,
+            ),
+            api_responses_received=0,
+            screenshot_count=len(
+                screenshots
+            ),
+            original_screenshot_bytes=(
+                original_bytes
+            ),
+            optimized_image_bytes=(
+                optimized_bytes
+            ),
+            content_hash=content_hash,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
 
         raise
 
 
 def print_usage_summary() -> None:
-    """Print cumulative API usage."""
-    summary = read_usage_summary()
+    """Print current and legacy API usage."""
+    current = (
+        read_current_usage_summary()
+    )
+
+    legacy = (
+        read_legacy_usage_summary()
+    )
 
     print()
-    print("=== API USAGE LEDGER ===")
     print(
-        f"API calls attempted : "
-        f"{summary['attempted']:,}"
+        "=== API USAGE LEDGER ==="
     )
     print(
-        f"API responses       : "
-        f"{summary['responses']:,}"
+        "Current ledger       : "
+        f"{CURRENT_USAGE_LEDGER}"
     )
     print(
-        f"Input tokens        : "
-        f"{summary['input_tokens']:,}"
+        f"API calls attempted  : "
+        f"{int(current['attempted']):,}"
     )
     print(
-        f"Cached input        : "
-        f"{summary['cached_input_tokens']:,}"
+        f"API responses        : "
+        f"{int(current['responses']):,}"
     )
     print(
-        f"Output tokens       : "
-        f"{summary['output_tokens']:,}"
+        f"Input tokens         : "
+        f"{int(current['input_tokens']):,}"
     )
     print(
-        f"Total tokens        : "
-        f"{summary['total_tokens']:,}"
+        f"Cached input         : "
+        f"{int(current['cached_input_tokens']):,}"
     )
     print(
-        f"Estimated cost      : "
-        f"${summary['cost']:.6f}"
+        f"Output tokens        : "
+        f"{int(current['output_tokens']):,}"
     )
     print(
-        f"Ledger              : "
-        f"{API_USAGE_OUTPUT}"
+        f"Total tokens         : "
+        f"{int(current['total_tokens']):,}"
+    )
+    print(
+        f"Estimated current cost: "
+        f"${current['cost']:.6f}"
+    )
+
+    if legacy["exists"]:
+        print()
+        print(
+            "=== LEGACY API LEDGER ==="
+        )
+        print(
+            "Legacy ledger        : "
+            f"{LEGACY_USAGE_LEDGER}"
+        )
+        print(
+            "Legacy backup        : "
+            f"{LEGACY_BACKUP_LEDGER}"
+        )
+        print(
+            f"Legacy rows          : "
+            f"{legacy['rows']:,}"
+        )
+
+        if legacy["cost"] is None:
+            print(
+                "Legacy cost          : "
+                "NOT RELIABLY MERGED"
+            )
+        else:
+            print(
+                f"Legacy recorded cost : "
+                f"${legacy['cost']:.6f}"
+            )
+
+    print()
+    print(
+        "The current ledger is authoritative "
+        "for new API usage."
     )
 
 
@@ -1660,15 +2375,29 @@ def main() -> int:
         "FAILED": 0,
     }
 
-    print("# iPhone Screen Time AI Ingestion")
-    print()
-    print(f"Month : {args.month}")
     print(
-        f"Date  : {args.date or 'all available dates'}"
+        "# iPhone Screen Time AI Ingestion"
     )
-    print(f"Dry   : {args.dry_run}")
+    print()
     print(
-        f"Model : "
+        f"Month : {args.month}"
+    )
+
+    if args.dates:
+        print(
+            "Dates : "
+            + ", ".join(args.dates)
+        )
+    else:
+        print(
+            "Dates : all available dates"
+        )
+
+    print(
+        f"Dry   : {args.dry_run}"
+    )
+    print(
+        "Model : "
         f"{args.model if args.model else 'not required'}"
     )
     print()
@@ -1676,26 +2405,32 @@ def main() -> int:
     try:
         parse_month(args.month)
 
-        directories = list_date_directories(
-            args.month,
-            args.date,
+        preserve_legacy_ledger()
+
+        directories = (
+            list_date_directories(
+                args.month,
+                args.dates,
+            )
         )
 
         client: OpenAI | None = None
         model = ""
 
         if not args.dry_run:
-            model = validate_model(args.model)
+            model = validate_model(
+                args.model
+            )
             client = create_client()
 
         for directory in directories:
             try:
                 status = process_date(
-                    directory,
-                    client,
-                    model,
-                    args.force,
-                    args.dry_run,
+                    date_directory=directory,
+                    client=client,
+                    model=model,
+                    force=args.force,
+                    dry_run=args.dry_run,
                 )
 
                 counts[status] += 1
@@ -1705,11 +2440,14 @@ def main() -> int:
 
                 print(
                     f"{directory.name} | FAILED | "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
                 )
 
         print()
-        print("=== INGESTION SUMMARY ===")
+        print(
+            "=== INGESTION SUMMARY ==="
+        )
 
         for status, count in counts.items():
             print(
@@ -1724,30 +2462,21 @@ def main() -> int:
             print(
                 "RESULT: IPHONE INGESTION FAILED."
             )
-            print(
-                "At least one date could not be processed."
-            )
             return 1
 
         if counts["INVALID"] > 0:
             print()
             print(
-                "RESULT: IPHONE INGESTION REQUIRES REVIEW."
-            )
-            print(
-                "At least one date has an incomplete or "
-                "unexpected screenshot set."
+                "RESULT: IPHONE INGESTION "
+                "REQUIRES REVIEW."
             )
             return 2
 
         if counts["REVIEW"] > 0:
             print()
             print(
-                "RESULT: IPHONE INGESTION PASSED WITH REVIEW."
-            )
-            print(
-                "Evidence was preserved, but at least one "
-                "date contains a review warning."
+                "RESULT: IPHONE INGESTION "
+                "PASSED WITH REVIEW."
             )
             return 0
 
@@ -1757,6 +2486,14 @@ def main() -> int:
         )
 
         return 0
+
+    except KeyboardInterrupt:
+        print()
+        print(
+            "RESULT: IPHONE INGESTION "
+            "CANCELLED."
+        )
+        return 130
 
     except Exception as exc:
         print(
