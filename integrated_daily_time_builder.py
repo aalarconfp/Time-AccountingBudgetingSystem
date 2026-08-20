@@ -1,12 +1,34 @@
 # integrated_daily_time_builder.py
 
-"""Build integrated daily time from device Daily_Time datasets.
+"""Build the canonical integrated daily activity-time dataset.
 
-The integrated layer combines device-observed time, optional weighted
-classification of Uncategorized time, manual adjustments, and residual
-Off-Device time.
+The integration layer combines source-specific Daily_Time datasets from:
 
-Raw, Fact_Time, and Daily_Time source data are never modified.
+    - ActivityWatch / ASUS laptop
+    - ActivityWatch / desktop
+    - Apple Screen Time / iPhone
+    - Habit / OffDevice
+
+Source-specific Raw, Fact_Time, and Daily_Time datasets are never modified.
+
+The integrated layer:
+    1. validates source coverage,
+    2. reads source-specific Daily_Time records,
+    3. preserves source identity,
+    4. validates source-specific taxonomies,
+    5. optionally classifies Uncategorized ActivityWatch time,
+    6. adds manual integrated records,
+    7. optionally calculates a residual only for a single-source build,
+    8. writes one integrated dataset per completed calendar date.
+
+Important:
+Multiple activity trackers can overlap in real time. Therefore a multi-source
+integration must not manufacture a 24-hour residual from:
+
+    laptop + desktop + iPhone + habit
+
+The integrated dataset represents observed/declared activity records across
+sources, not a mutually exclusive 24-hour clock ledger.
 """
 
 from __future__ import annotations
@@ -51,7 +73,7 @@ CLASSIFICATION_INPUT_PATH = (
 
 @dataclass(frozen=True)
 class DailyRecord:
-    """Represent one integrated daily record."""
+    """Represent one integrated daily activity record."""
 
     date: str
     category: str
@@ -59,6 +81,9 @@ class DailyRecord:
     duration_sec: float
     event_count: int
     source: str
+    source_name: str
+    source_device: str
+    source_type: str
     allocation_type: str
     device_count: int
     devices: str
@@ -118,7 +143,7 @@ def parse_arguments() -> argparse.Namespace:
         choices=sorted(SOURCE_DEFINITIONS),
         help=(
             "Source to include. May be specified more than once. "
-            "Defaults to all configured ActivityWatch device sources."
+            "Defaults to all configured sources."
         ),
     )
 
@@ -173,9 +198,7 @@ def get_project_timezone() -> ZoneInfo:
 def get_latest_completed_date() -> date:
     """Return yesterday in the configured project timezone."""
     return (
-        datetime.now(
-            get_project_timezone()
-        ).date()
+        datetime.now(get_project_timezone()).date()
         - timedelta(days=1)
     )
 
@@ -228,47 +251,85 @@ def resolve_date_range(
     return start, end
 
 
-def get_activitywatch_sources(
+def get_integrated_sources(
     requested_sources: list[str] | None,
 ) -> list[str]:
-    """Return configured ActivityWatch device sources."""
+    """Return selected configured sources."""
     if requested_sources:
-        selected = requested_sources
-    else:
-        selected = [
-            name
-            for name, definition in SOURCE_DEFINITIONS.items()
-            if (
-                definition.source.value == "ActivityWatch"
-                and definition.device
-            )
-        ]
+        return sorted(set(requested_sources))
 
-    return sorted(selected)
+    return sorted(SOURCE_DEFINITIONS)
+
+
+def get_source_definition(
+    source_name: str,
+):
+    """Return a configured source definition."""
+    try:
+        return SOURCE_DEFINITIONS[source_name]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown configured source: {source_name}"
+        ) from exc
 
 
 def get_daily_path(
     source_name: str,
     target_date: date,
 ) -> Path:
-    """Return the canonical Daily_Time path for a source."""
-    definition = SOURCE_DEFINITIONS[source_name]
+    """Return the canonical Daily_Time path for a configured source."""
+    definition = get_source_definition(source_name)
+    source_type = definition.source.value
 
-    if not definition.device:
+    if source_type == "ActivityWatch":
+        if not definition.device:
+            raise ValueError(
+                f"ActivityWatch source '{source_name}' "
+                "does not define a device."
+            )
+
+        directory = (
+            DAILY_DIRECTORY
+            / "Time"
+            / "ActivityWatch"
+            / definition.device
+        )
+
+    elif source_type == "AppleScreenTime":
+        directory = (
+            DAILY_DIRECTORY
+            / "Time"
+            / "AppleScreenTime"
+            / (
+                definition.device
+                if definition.device
+                else "iPhone"
+            )
+        )
+
+    elif source_type == "Habit":
+        directory = (
+            DAILY_DIRECTORY
+            / "Time"
+            / "Habit"
+            / "OffDevice"
+        )
+
+    else:
         raise ValueError(
-            f"Source '{source_name}' does not define a device."
+            f"Unsupported Daily_Time source type "
+            f"'{source_type}' for '{source_name}'."
         )
 
     return (
-        DAILY_DIRECTORY
-        / "Time"
-        / "ActivityWatch"
-        / definition.device
+        directory
         / f"Daily_Time_{target_date.isoformat()}.csv"
     )
 
 
-def read_csv(path: Path) -> list[dict[str, str]]:
+def read_csv(
+    path: Path,
+) -> list[dict[str, str]]:
     """Read a UTF-8 CSV file."""
     with path.open(
         mode="r",
@@ -286,7 +347,7 @@ def parse_float(
     """Parse a numeric CSV field."""
     try:
         return float(value or 0)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise ValueError(
             f"Invalid {field} '{value}' in {path}."
         ) from exc
@@ -300,7 +361,7 @@ def parse_int(
     """Parse an integer CSV field."""
     try:
         return int(float(value or 0))
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise ValueError(
             f"Invalid {field} '{value}' in {path}."
         ) from exc
@@ -309,8 +370,9 @@ def parse_int(
 def validate_daily_row(
     row: dict[str, str],
     path: Path,
+    source_name: str,
 ) -> None:
-    """Validate a Daily_Time row."""
+    """Validate one source-specific Daily_Time row."""
     required = (
         "Date",
         "Category",
@@ -338,6 +400,12 @@ def validate_daily_row(
             f"Empty Category in {path}."
         )
 
+    definition = get_source_definition(source_name)
+    source_type = definition.source.value
+
+    if source_type in {"Habit", "AppleScreenTime"}:
+        return
+
     if category == "Uncategorized":
         if subcategory:
             raise ValueError(
@@ -351,7 +419,7 @@ def validate_daily_row(
         subcategory,
     ):
         raise ValueError(
-            "Unsupported taxonomy path in "
+            "Unsupported ActivityWatch taxonomy path in "
             f"{path}: {category} > {subcategory}"
         )
 
@@ -366,20 +434,39 @@ def read_daily_records(
         target_date,
     )
 
-    rows = read_csv(path)
-    definition = SOURCE_DEFINITIONS[source_name]
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing Daily_Time dataset: {path}"
+        )
 
-    records = []
+    rows = read_csv(path)
+    definition = get_source_definition(source_name)
+
+    records: list[DailyRecord] = []
 
     for row in rows:
-        validate_daily_row(row, path)
+        validate_daily_row(
+            row,
+            path,
+            source_name,
+        )
+
+        row_date = (row.get("Date") or "").strip()
+
+        if row_date:
+            parsed_row_date = parse_date(row_date)
+
+            if parsed_row_date != target_date:
+                raise ValueError(
+                    f"Daily_Time row date {parsed_row_date} "
+                    f"does not match requested date "
+                    f"{target_date} in {path}."
+                )
 
         records.append(
             DailyRecord(
                 date=target_date.isoformat(),
-                category=(
-                    row.get("Category") or ""
-                ).strip(),
+                category=(row.get("Category") or "").strip(),
                 subcategory=(
                     row.get("Subcategory") or ""
                 ).strip(),
@@ -394,7 +481,14 @@ def read_daily_records(
                     path,
                 ),
                 source=definition.source.value,
-                allocation_type="Observed",
+                source_name=source_name,
+                source_device=definition.device or "",
+                source_type=definition.source.value,
+                allocation_type=(
+                    row.get("Allocation_Type")
+                    or "Observed"
+                ).strip()
+                or "Observed",
                 device_count=1,
                 devices=definition.device or "",
                 contexts=definition.context,
@@ -473,7 +567,7 @@ def read_manual_records(
         return []
 
     rows = read_csv(path)
-    records = []
+    records: list[ManualRecord] = []
 
     for row in rows:
         row_date = (row.get("Date") or "").strip()
@@ -484,23 +578,25 @@ def read_manual_records(
         if parse_date(row_date) != target_date:
             continue
 
-        category = (
-            row.get("Category") or ""
-        ).strip()
+        category = (row.get("Category") or "").strip()
         subcategory = (
             row.get("Subcategory") or ""
         ).strip()
 
-        if category == "Off-Device":
-            pass
-        elif not is_supported_category_path(
-            category,
-            subcategory,
-        ):
+        if not category:
             raise ValueError(
-                "Unsupported manual taxonomy path: "
-                f"{category} > {subcategory}"
+                f"Manual record has no Category in {path}."
             )
+
+        if category != "Off-Device":
+            if not is_supported_category_path(
+                category,
+                subcategory,
+            ):
+                raise ValueError(
+                    "Unsupported manual taxonomy path: "
+                    f"{category} > {subcategory}"
+                )
 
         duration_sec = parse_float(
             row.get("Duration_sec"),
@@ -534,15 +630,11 @@ def read_classification_weights(
         return []
 
     rows = read_csv(path)
-    weights = []
+    weights: list[ClassificationWeight] = []
 
     for row in rows:
-        device = (
-            row.get("Device") or ""
-        ).strip()
-        category = (
-            row.get("Category") or ""
-        ).strip()
+        device = (row.get("Device") or "").strip()
+        category = (row.get("Category") or "").strip()
         subcategory = (
             row.get("Subcategory") or ""
         ).strip()
@@ -600,14 +692,14 @@ def validate_classification_weights(
     weights: list[ClassificationWeight],
     source_names: list[str],
 ) -> None:
-    """Validate weighted allocations."""
+    """Validate weighted allocations against selected ActivityWatch devices."""
     if not weights:
         return
 
     selected_devices = {
-        SOURCE_DEFINITIONS[name].device
+        get_source_definition(name).device
         for name in source_names
-        if SOURCE_DEFINITIONS[name].device
+        if get_source_definition(name).device
     }
 
     grouped: dict[
@@ -651,13 +743,9 @@ def apply_classification_weights(
     records: list[DailyRecord],
     weights: list[ClassificationWeight],
 ) -> tuple[list[DailyRecord], float, float]:
-    """Apply weighted allocations to the Uncategorized pool."""
+    """Apply weighted allocations to ActivityWatch Uncategorized time."""
     if not weights:
-        return (
-            records,
-            0.0,
-            0.0,
-        )
+        return records, 0.0, 0.0
 
     all_device_weights = [
         weight
@@ -679,12 +767,15 @@ def apply_classification_weights(
         list[DailyRecord],
     ] = defaultdict(list)
 
-    non_uncategorized = []
+    non_uncategorized: list[DailyRecord] = []
 
     for record in records:
-        if record.category == "Uncategorized":
+        if (
+            record.category == "Uncategorized"
+            and record.source_type == "ActivityWatch"
+        ):
             uncategorized_by_device[
-                record.devices
+                record.source_device
             ].append(record)
         else:
             non_uncategorized.append(record)
@@ -736,7 +827,10 @@ def apply_classification_weights(
                     subcategory=weight.subcategory,
                     duration_sec=allocated_seconds,
                     event_count=0,
-                    source="ActivityWatch",
+                    source=representative.source,
+                    source_name=representative.source_name,
+                    source_device=representative.source_device,
+                    source_type=representative.source_type,
                     allocation_type="Classified",
                     device_count=1,
                     devices=device,
@@ -756,17 +850,19 @@ def apply_classification_weights(
 def aggregate_records(
     records: Iterable[DailyRecord],
 ) -> list[DailyRecord]:
-    """Aggregate records by category and allocation type."""
+    """Aggregate records without merging distinct configured sources."""
     grouped: dict[
-        tuple[str, str, str],
+        tuple[str, str, str, str, str],
         dict[str, object],
     ] = {}
 
     for record in records:
         key = (
+            record.source_name,
             record.category,
             record.subcategory,
             record.allocation_type,
+            record.source_device,
         )
 
         if key not in grouped:
@@ -776,6 +872,8 @@ def aggregate_records(
                 "event_count": 0,
                 "devices": set(),
                 "contexts": set(),
+                "source": record.source,
+                "source_type": record.source_type,
             }
 
         item = grouped[key]
@@ -799,12 +897,14 @@ def aggregate_records(
         if isinstance(contexts, set) and record.contexts:
             contexts.add(record.contexts)
 
-    result = []
+    result: list[DailyRecord] = []
 
     for (
+        source_name,
         category,
         subcategory,
         allocation_type,
+        source_device,
     ), item in grouped.items():
         devices = item["devices"]
         contexts = item["contexts"]
@@ -820,7 +920,12 @@ def aggregate_records(
                 event_count=int(
                     item["event_count"]
                 ),
-                source="ActivityWatch",
+                source=str(item["source"]),
+                source_name=source_name,
+                source_device=source_device,
+                source_type=str(
+                    item["source_type"]
+                ),
                 allocation_type=allocation_type,
                 device_count=len(devices),
                 devices=", ".join(
@@ -839,25 +944,24 @@ def convert_manual_records(
     records: list[ManualRecord],
 ) -> list[DailyRecord]:
     """Convert manual records to integrated records."""
-    result = []
-
-    for record in records:
-        result.append(
-            DailyRecord(
-                date=record.date,
-                category=record.category,
-                subcategory=record.subcategory,
-                duration_sec=record.duration_sec,
-                event_count=0,
-                source="Manual",
-                allocation_type="Manual",
-                device_count=0,
-                devices="",
-                contexts="",
-            )
+    return [
+        DailyRecord(
+            date=record.date,
+            category=record.category,
+            subcategory=record.subcategory,
+            duration_sec=record.duration_sec,
+            event_count=0,
+            source="Manual",
+            source_name="manual",
+            source_device="",
+            source_type="Manual",
+            allocation_type="Manual",
+            device_count=0,
+            devices="",
+            contexts="",
         )
-
-    return result
+        for record in records
+    ]
 
 
 def calculate_total(
@@ -892,6 +996,9 @@ def build_residual(
         duration_sec=remaining,
         event_count=0,
         source="System",
+        source_name="system",
+        source_device="",
+        source_type="System",
         allocation_type="Residual",
         device_count=0,
         devices="",
@@ -940,6 +1047,9 @@ def write_output(
         "Duration_hours",
         "Event_Count",
         "Source",
+        "Source_Name",
+        "Source_Type",
+        "Source_Device",
         "Allocation_Type",
         "Device_Count",
         "Devices",
@@ -978,6 +1088,9 @@ def write_output(
                     ),
                     "Event_Count": record.event_count,
                     "Source": record.source,
+                    "Source_Name": record.source_name,
+                    "Source_Type": record.source_type,
+                    "Source_Device": record.source_device,
                     "Allocation_Type": (
                         record.allocation_type
                     ),
@@ -996,7 +1109,7 @@ def build_date(
     output_dir: Path,
 ) -> dict[str, object]:
     """Build one fully covered integrated date."""
-    missing_sources = []
+    missing_sources: list[tuple[str, Path]] = []
 
     for source_name in source_names:
         path = get_daily_path(
@@ -1047,14 +1160,22 @@ def build_date(
             "overage": 0.0,
         }
 
-    observed_records = []
+    observed_records: list[DailyRecord] = []
 
     for source_name in source_names:
+        source_records = read_daily_records(
+            source_name,
+            target_date,
+        )
+
+        print(
+            f"{source_name:20s}: "
+            f"{len(source_records):>6} rows | "
+            f"{format_duration(calculate_total(source_records))}"
+        )
+
         observed_records.extend(
-            read_daily_records(
-                source_name,
-                target_date,
-            )
+            source_records
         )
 
     weights = read_classification_weights(
@@ -1096,24 +1217,65 @@ def build_date(
         manual_integrated
     )
 
-    pre_residual_seconds = (
+    combined_seconds = (
         observed_seconds
         + manual_seconds
     )
 
-    overage = (
-        pre_residual_seconds
-        - SECONDS_PER_DAY
-    )
+    multi_source = len(source_names) > 1
 
-    residual = None
+    residual: DailyRecord | None = None
 
-    if overage <= 0.001:
-        residual = build_residual(
-            target_date,
-            observed_seconds,
-            manual_seconds,
+    if multi_source:
+        overage = max(
+            combined_seconds - SECONDS_PER_DAY,
+            0.0,
         )
+
+        print(
+            "Residual Off-Device : NOT CALCULATED "
+            "(multi-source)"
+        )
+
+        if overage > 0.001:
+            print(
+                "24-hour check       : OVERLAP DETECTED "
+                f"(+{format_duration(overage)})"
+            )
+        else:
+            print(
+                "24-hour check       : NOT APPLICABLE "
+                "(multi-source activity)"
+            )
+
+    else:
+        overage = (
+            combined_seconds
+            - SECONDS_PER_DAY
+        )
+
+        if overage <= 0.001:
+            residual = build_residual(
+                target_date,
+                observed_seconds,
+                manual_seconds,
+            )
+
+            print(
+                "Residual Off-Device : "
+                f"{format_duration(residual.duration_sec)}"
+                if residual
+                else
+                "Residual Off-Device : 0m"
+            )
+        else:
+            print(
+                "Residual Off-Device : NOT CALCULATED"
+            )
+            print(
+                "24-hour check       : OVER 24 HOURS "
+                f"BY {format_duration(overage)}"
+            )
 
     records = [
         *observed_records,
@@ -1123,9 +1285,7 @@ def build_date(
     if residual:
         records.append(residual)
 
-    allocated_seconds = calculate_total(
-        records
-    )
+    allocated_seconds = calculate_total(records)
 
     output_path = (
         output_dir
@@ -1135,15 +1295,18 @@ def build_date(
         )
     )
 
-    write_output(
-        sorted(
-            records,
-            key=lambda record: (
-                record.category,
-                record.subcategory,
-                record.allocation_type,
-            ),
+    output_records = sorted(
+        records,
+        key=lambda record: (
+            record.category,
+            record.subcategory,
+            record.source_name,
+            record.allocation_type,
         ),
+    )
+
+    write_output(
+        output_records,
         target_date,
         output_path,
     )
@@ -1164,41 +1327,27 @@ def build_date(
         "Manual time         : "
         f"{format_duration(manual_seconds)}"
     )
-
-    if residual:
-        print(
-            "Residual Off-Device : "
-            f"{format_duration(residual.duration_sec)}"
-        )
-    else:
-        print(
-            "Residual Off-Device : NOT CALCULATED"
-        )
-
     print(
-        "Allocated time      : "
+        "Allocated total     : "
         f"{format_duration(allocated_seconds)}"
     )
     print(
         "Integrated rows     : "
         f"{len(records)}"
     )
+    print(
+        f"Output              : {output_path}"
+    )
 
-    if overage > 0.001:
-        print(
-            "WARNING             : "
-            f"TIME EXCEEDS 24 HOURS BY "
-            f"{format_duration(overage)}"
-        )
+    if multi_source:
+        status = "PASS: MULTI-SOURCE INTEGRATION"
+    elif overage > 0.001:
         status = "WARNING: OVER 24 HOURS"
     else:
         status = "PASS"
 
     print(
         f"Status              : {status}"
-    )
-    print(
-        f"Output              : {output_path}"
     )
 
     return {
@@ -1211,6 +1360,7 @@ def build_date(
         "uncategorized": original_uncategorized,
         "classified": classified_seconds,
         "overage": max(overage, 0.0),
+        "multi_source": multi_source,
     }
 
 
@@ -1219,17 +1369,15 @@ def main() -> int:
     args = parse_arguments()
 
     try:
-        start_date, end_date = resolve_date_range(
-            args
-        )
+        start_date, end_date = resolve_date_range(args)
 
-        source_names = get_activitywatch_sources(
+        source_names = get_integrated_sources(
             args.source
         )
 
         if not source_names:
             raise ValueError(
-                "No ActivityWatch device sources are configured."
+                "No configured integration sources are available."
             )
 
         ensure_manual_template(
@@ -1271,6 +1419,7 @@ def main() -> int:
         dates_built = 0
         incomplete_dates = 0
         overage_dates = 0
+        multi_source_dates = 0
 
         total_observed = 0.0
         total_manual = 0.0
@@ -1296,36 +1445,57 @@ def main() -> int:
 
             if not result["complete"]:
                 incomplete_dates += 1
+
             elif result["built"]:
                 dates_built += 1
 
                 total_observed += float(
                     result["observed"]
                 )
+
                 total_manual += float(
                     result["manual"]
                 )
+
                 total_allocated += float(
                     result["allocated"]
                 )
+
                 total_rows += int(
                     result["rows"]
                 )
+
                 total_uncategorized += float(
                     result["uncategorized"]
                 )
+
                 total_classified += float(
                     result["classified"]
                 )
 
-                if float(result["overage"]) > 0.001:
+                if bool(
+                    result.get("multi_source", False)
+                ):
+                    multi_source_dates += 1
+
+                if (
+                    not bool(
+                        result.get(
+                            "multi_source",
+                            False,
+                        )
+                    )
+                    and float(result["overage"]) > 0.001
+                ):
                     overage_dates += 1
 
             current_date += timedelta(days=1)
 
         print()
         print("=" * 60)
-        print("=== Integrated Daily Time Build Summary ===")
+        print(
+            "=== Integrated Daily Time Build Summary ==="
+        )
         print(
             f"Dates checked          : "
             f"{dates_checked}"
@@ -1363,6 +1533,10 @@ def main() -> int:
             f"{format_duration(total_allocated)}"
         )
         print(
+            f"Multi-source dates     : "
+            f"{multi_source_dates}"
+        )
+        print(
             f"Over-24h dates         : "
             f"{overage_dates}"
         )
@@ -1373,8 +1547,8 @@ def main() -> int:
                 "RESULT: INTEGRATED BUILD INCOMPLETE."
             )
             print(
-                "Missing device data must be resolved "
-                "before calculating Off-Device residuals."
+                "Missing source data must be resolved "
+                "before the date can be integrated."
             )
             return 1
 
@@ -1385,7 +1559,7 @@ def main() -> int:
                 "WITH WARNINGS."
             )
             print(
-                "Review dates exceeding 24 hours."
+                "Single-source dates exceeded 24 hours."
             )
             return 0
 

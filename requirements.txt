@@ -1,0 +1,11 @@
+# System Tracker — Python dependencies
+# Python baseline: 3.13.x
+# Each machine must maintain its own local .venv.
+#
+# Install:
+#   python -m pip install --upgrade pip
+#   python -m pip install -r requirements.txt
+
+aw-client
+openai
+tzdata

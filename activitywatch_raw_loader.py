@@ -1,4 +1,4 @@
-# G:\My Drive\Personal Life\Habit and Wellness\System\_Tracker\activitywatch_raw_loader.py
+# activitywatch_raw_loader.py
 
 """Incrementally load ActivityWatch canonical events into Raw_ActivityWatch.
 
@@ -6,6 +6,10 @@ The loader reads ActivityWatch without modifying the ActivityWatch server.
 
 Default behavior processes completed calendar days only. The current local
 calendar day is excluded unless --include-today is explicitly supplied.
+
+Canonical output is stored under:
+
+    output/Raw/ActivityWatch/<device>/Raw_ActivityWatch_<date>.csv
 
 Examples:
 
@@ -46,16 +50,12 @@ from typing import Any
 
 from aw_client import ActivityWatchClient
 from aw_client.queries import DesktopQueryParams, canonicalEvents
-from tracker_config import OUTPUT_DIRECTORY
+
+from config.paths import get_activitywatch_raw_path
 
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 5600
-
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-
-# Keep the validated legacy location active until the data migration is complete.
-DEFAULT_OUTPUT_DIRECTORY = OUTPUT_DIRECTORY
 
 CLIENT_NAME = "system-tracker-raw-loader"
 
@@ -94,9 +94,7 @@ def parse_arguments() -> argparse.Namespace:
     date_group.add_argument(
         "--date",
         dest="target_date",
-        help=(
-            "Load one calendar date in YYYY-MM-DD format."
-        ),
+        help="Load one calendar date in YYYY-MM-DD format.",
     )
 
     date_group.add_argument(
@@ -138,27 +136,23 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--host",
         default=DEFAULT_HOST,
-        help=(
-            f"ActivityWatch server host. Default: {DEFAULT_HOST}"
-        ),
+        help=f"ActivityWatch server host. Default: {DEFAULT_HOST}",
     )
 
     parser.add_argument(
         "--port",
         type=int,
         default=DEFAULT_PORT,
-        help=(
-            f"ActivityWatch server port. Default: {DEFAULT_PORT}"
-        ),
+        help=f"ActivityWatch server port. Default: {DEFAULT_PORT}",
     )
 
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIRECTORY,
+        default=None,
         help=(
-            "Directory containing Raw_ActivityWatch files. "
-            f"Default: {DEFAULT_OUTPUT_DIRECTORY}"
+            "Optional legacy/custom output directory override. "
+            "By default the canonical device-specific path is used."
         ),
     )
 
@@ -194,6 +188,7 @@ def resolve_target_dates(
 ) -> list[date]:
     """Resolve command-line arguments into an ordered date list."""
     today = get_today()
+
     latest_allowed_date = (
         today
         if args.include_today
@@ -217,9 +212,7 @@ def resolve_target_dates(
 
     if args.days is not None:
         if args.days < 1:
-            raise ValueError(
-                "--days must be at least 1."
-            )
+            raise ValueError("--days must be at least 1.")
 
         start = latest_allowed_date - timedelta(
             days=args.days - 1
@@ -248,8 +241,7 @@ def resolve_target_dates(
 
         if end < start:
             raise ValueError(
-                "--end-date cannot be earlier than "
-                "--start-date."
+                "--end-date cannot be earlier than --start-date."
             )
 
         if end > latest_allowed_date:
@@ -269,9 +261,7 @@ def resolve_target_dates(
                 "completed-day rule."
             )
 
-        number_of_days = (
-            end - start
-        ).days + 1
+        number_of_days = (end - start).days + 1
 
         return [
             start + timedelta(days=offset)
@@ -390,7 +380,7 @@ def execute_canonical_query(
     result = client.query(
         query=query,
         timeperiods=[(start, end)],
-        name="system-tracker-raw-loader",
+        name=CLIENT_NAME,
         cache=False,
     )
 
@@ -611,13 +601,20 @@ def deduplicate_rows(
 
 
 def get_output_path(
-    output_directory: Path,
+    output_directory: Path | None,
     target_date: date,
+    device: str,
 ) -> Path:
     """Return the deterministic daily raw dataset path."""
-    return (
-        output_directory
-        / f"Raw_ActivityWatch_{target_date.isoformat()}.csv"
+    if output_directory is not None:
+        return (
+            output_directory
+            / f"Raw_ActivityWatch_{target_date.isoformat()}.csv"
+        )
+
+    return get_activitywatch_raw_path(
+        device=device,
+        target_date=target_date,
     )
 
 
@@ -826,7 +823,7 @@ def format_duration(
 def load_one_date(
     client: ActivityWatchClient,
     target_date: date,
-    output_directory: Path,
+    output_directory: Path | None,
     window_bucket: str,
     afk_bucket: str,
     device: str,
@@ -834,13 +831,8 @@ def load_one_date(
     """Load and reconcile one calendar date."""
     start, end = get_local_day(target_date)
 
-    print(
-        f"\n--- {target_date.isoformat()} ---"
-    )
-
-    print(
-        "Retrieving canonical ActivityWatch events..."
-    )
+    print(f"\n--- {target_date.isoformat()} ---")
+    print("Retrieving canonical ActivityWatch events...")
 
     query = build_canonical_query(
         window_bucket_id=window_bucket,
@@ -859,11 +851,10 @@ def load_one_date(
     output_path = get_output_path(
         output_directory=output_directory,
         target_date=target_date,
+        device=device,
     )
 
-    existing_rows = read_existing_rows(
-        output_path
-    )
+    existing_rows = read_existing_rows(output_path)
 
     if retrieved_count == 0:
         validate_existing_rows(
@@ -873,9 +864,7 @@ def load_one_date(
         )
 
         if existing_rows:
-            total_duration = calculate_duration(
-                existing_rows
-            )
+            total_duration = calculate_duration(existing_rows)
 
             print(
                 "Retrieved from ActivityWatch : 0"
@@ -962,10 +951,6 @@ def load_one_date(
         normalized_rows
     )
 
-    existing_rows = read_existing_rows(
-        output_path
-    )
-
     validate_existing_rows(
         rows=existing_rows,
         path=output_path,
@@ -986,9 +971,7 @@ def load_one_date(
         output_path=output_path,
     )
 
-    total_duration = calculate_duration(
-        merged_rows
-    )
+    total_duration = calculate_duration(merged_rows)
 
     print(
         f"Retrieved from ActivityWatch : "
@@ -1131,20 +1114,14 @@ def main() -> int:
     try:
         target_dates = resolve_target_dates(args)
 
-        first_start, _ = get_local_day(
-            target_dates[0]
-        )
-
-        _, last_end = get_local_day(
-            target_dates[-1]
-        )
+        first_start, _ = get_local_day(target_dates[0])
+        _, last_end = get_local_day(target_dates[-1])
 
         print("# ActivityWatch Raw Loader")
         print()
 
         print(
-            f"Server : "
-            f"http://{args.host}:{args.port}"
+            f"Server : http://{args.host}:{args.port}"
         )
 
         if len(target_dates) == 1:
@@ -1198,20 +1175,34 @@ def main() -> int:
         )
         print()
 
-        window_bucket, afk_bucket = get_bucket_ids(
-            client
-        )
+        window_bucket, afk_bucket = get_bucket_ids(client)
 
         print("=== Selected Buckets ===")
         print(f"Window : {window_bucket}")
         print(f"AFK    : {afk_bucket}")
-        print(
-            f"Dates  : {len(target_dates):,}"
-        )
+        print(f"Dates  : {len(target_dates):,}")
 
-        results: list[
-            dict[str, int | float]
-        ] = []
+        if args.output_dir is None:
+            preview_path = get_activitywatch_raw_path(
+                device=device,
+                target_date=target_dates[0],
+            )
+            print(
+                f"Output : {preview_path.parent}"
+            )
+            print(
+                "Path   : canonical device-specific "
+                "ActivityWatch Raw dataset"
+            )
+        else:
+            print(
+                f"Output : {args.output_dir}"
+            )
+            print(
+                "Path   : custom/legacy override"
+            )
+
+        results: list[dict[str, int | float]] = []
 
         for target_date in target_dates:
             result = load_one_date(
