@@ -85,3 +85,34 @@ Change the reference taxonomy, rebuild it, validate it, and rerun the
 analysis.
 
 Do not manually edit final analytical CSVs.
+
+## Desktop import: `IMPORT FAILED`
+
+`import_desktop_activitywatch.py` refuses on:
+
+- **Incompatible `export_contract_version`** — the collector and this repo are
+  on different contract majors. Update the older side (`contract.py` in the
+  collector; `desktop_export_contract.py` here — keep them in sync).
+- **Wrong device / source** — the package is not `DesktopPC-Andres` /
+  ActivityWatch. Wrong package.
+- **`checksum mismatch` / `unexpected Raw|Fact header`** — the package was
+  edited after export, or was produced by an old collector. Re-run
+  `collect_desktop.py` + `export_package.py` on the desktop.
+- **`expected_dates is not the contiguous inclusive range`** or
+  **`missing Raw data`** — the collection has gaps. Re-collect the period on
+  the desktop.
+- **`validation status is 'FAIL'`** — the collector's Fact_Time validation
+  failed. Fix it there; only use `--allow-unvalidated` with a specific reason.
+- **`Imported dates fall inside closed reporting period(s)`** — the target
+  dates overlap a populated `output/Integrated/Analysis/Final/<range>/`.
+  Re-run with `--force` only if you intend to invalidate that period's Final
+  outputs, and record why (`docs/CHANGE_CONTROL.md`, Class A).
+
+Use `--dry-run` first to see the plan without writing anything. Every real
+import writes `output/Imports/Import_Receipt_*.json`.
+
+## Desktop collection itself fails
+
+That is a Desktop Tracker Collector problem — see that project's
+`docs/TROUBLESHOOTING.md` (machine mismatch, ActivityWatch not running,
+empty days, validation failure).

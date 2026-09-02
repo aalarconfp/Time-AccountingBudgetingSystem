@@ -1,10 +1,19 @@
-# System Tracker — Python dependencies
-# Python baseline: 3.13.x
-# Each machine must maintain its own local .venv.
+# System Tracker — Python dependencies (laptop / central environment)
+# Python baseline: 3.13+
+# Each machine maintains its own local .venv (not synced via Drive or Git).
 #
 # Install:
 #   python -m pip install --upgrade pip
 #   python -m pip install -r requirements.txt
+#
+# Notes:
+#   aw-client : laptop ActivityWatch collection (activitywatch_pipeline.py)
+#   openai    : iPhone + Habit screenshot ingestion only
+#               (iphone_screen_time_ingest.py, habit_offdevice_ingest.py)
+#   tzdata    : America/Bogota timezone on Windows
+#
+# import_desktop_activitywatch.py is stdlib-only.
+# The Desktop Tracker Collector project needs only aw-client + tzdata.
 
 aw-client
 openai

@@ -2,7 +2,7 @@
 
 Status: Mandatory
 
-Reporting period: ____________________  
+Reporting period (inclusive): __________ .. __________  
 Prepared by: ________________________  
 Date closed: _________________________
 
@@ -10,17 +10,19 @@ Date closed: _________________________
 
 - [ ] Start date recorded.
 - [ ] End date recorded.
-- [ ] Expected calendar days confirmed.
-- [ ] Clock capacity calculated.
-- [ ] Correct output directory confirmed.
+- [ ] Expected calendar days confirmed (inclusive range).
+- [ ] Clock capacity calculated (calendar days x 24 h).
+- [ ] Correct output directory confirmed (`output/Integrated/Analysis/Final/<start>_<end>/`).
 
 ## B. Source collection
 
-- [ ] ActivityWatch laptop data collected.
-- [ ] ActivityWatch desktop data collected.
-- [ ] Apple Screen Time data collected.
-- [ ] Habit data reviewed.
-- [ ] Off-Device activity reviewed.
+- [ ] ActivityWatch laptop data collected and pipelined.
+- [ ] ActivityWatch desktop package imported (`import_desktop_activitywatch.py`).
+- [ ] Desktop import receipt reviewed (`output/Imports/Import_Receipt_*.json`):
+      period correct, `closed_period_conflicts` empty (or override recorded),
+      `empty_dates` explained.
+- [ ] Apple Screen Time screenshots present for every date.
+- [ ] Habit / Off-Device screenshots present and reviewed.
 - [ ] No known source gaps remain unexplained.
 
 ## C. Source processing

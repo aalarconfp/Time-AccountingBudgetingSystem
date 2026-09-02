@@ -2,20 +2,40 @@
 
 ## Purpose
 
-The System Tracker uses the same Python application code on the laptop and desktop.
+The Python environment is machine-local. Do not synchronize `.venv` through
+Google Drive or Git.
 
-The Python environment itself is machine-local.
+## Two environments
 
-Do not synchronize `.venv` through Google Drive or Git.
+| Project | Location | Dependencies |
+|---|---|---|
+| **System Tracker** (this repo) | `System_Tracker\.venv` | `aw-client`, `openai`, `tzdata` (`openai` is only used by the iPhone and Habit ingest steps) |
+| **Desktop Tracker Collector** | `Desktop Tracker Collector\.venv` | `aw-client`, `tzdata` only — no `openai`, no dependency on System Tracker |
+
+The desktop PC needs **only** the Desktop Tracker Collector environment to
+collect ActivityWatch data. The full System Tracker environment is used on the
+laptop / central machine for import, integration, and analysis.
 
 ## Python baseline
 
-Each machine has its own Python installation and project-local `.venv`.
+Each machine has its own Python installation and project-local `.venv`. The
+version and base interpreter may differ between machines; create the `.venv`
+from a valid interpreter present on the machine where the code runs.
 
-The Python version and base interpreter may differ between machines. The `.venv` must always be created from a valid Python installation available on the machine where the pipeline is being executed.
+- Laptop / central: Python 3.13+ (`System_Tracker\.venv`).
+- Desktop: Python 3.14.x — `C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe`.
 
-The current Desktop environment uses:
+`import_desktop_activitywatch.py` and `desktop_export_contract.py` are
+stdlib-only so the import step never depends on the collector's environment.
 
-```text
-Python 3.14.x
-C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe
+## Setup
+
+```powershell
+# System Tracker (laptop / central)
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+# Desktop Tracker Collector (desktop) — see that project's scripts\setup_desktop.ps1
+```

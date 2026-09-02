@@ -1,341 +1,455 @@
 # System Tracker Runbook
 
-Version: 1.0  
-Status: Operational baseline  
-Baseline period: 2026-08-01 → 2026-08-15
+Version: 2.0
+Status: Canonical operational runbook
+Supersedes: `docs/history/PERIOD_PIPELINE_RUNBOOK_FINAL.md` (archived)
 
-## Purpose
+This is the single source of truth for running a reporting period. Do not
+reconstruct the process from chat history or from the archived runbook. Follow
+this document and `docs/PERIOD_CLOSE_CHECKLIST.md`.
 
-This is the canonical operating procedure for a reporting period.
+---
 
-Do not rely on memory or chat history to reproduce the process. Follow this
-runbook and the period-close checklist.
+## 0. Architecture
+
+Two projects:
+
+```
+DESKTOP PC                          LAPTOP / central
+──────────                          ────────────────
+Desktop Tracker Collector           System Tracker  (this repo)
+  ActivityWatch → Raw → Fact_Time     ├── import desktop package
+  → Daily_Time → validate → export    ├── laptop ActivityWatch
+        │                             ├── iPhone Screen Time
+        │  portable export package    ├── Habit / Off-Device
+        └────────────────────────────►│
+                                      ▼
+                        Integrated Daily Time
+                                      ▼
+                        Integration / Reconciliation
+                                      ▼
+                        Final Analysis
+                          ├── Detail Analysis
+                          ├── EDA
+                          ├── Standard Report
+                          └── Period Close
+```
+
+- **Desktop Tracker Collector** (`../Desktop Tracker Collector/`, separate repo)
+  owns desktop ActivityWatch collection only. See its `docs/COLLECTION_RUNBOOK.md`.
+- **System Tracker** owns cross-device integration and all analysis.
+- The desktop no longer needs this repo to collect ActivityWatch data.
+
+## Accounting model (established — do not redesign)
+
+```
+Clock Capacity  =  Unique Tracked Time  +  Off-Device Life
+Unique Tracked Time  =  Corrected Tracked Time  -  Tracked Overlap
+```
+
+- Analytical source totals may exceed clock capacity because multiple devices
+  observe the same elapsed time. This is not automatically an error.
+- Off-Device Life is intentional analytical time (human-life maintenance not
+  captured by device telemetry). It is not "missing" time.
+- Taxonomy: 12 canonical categories, 7 domains, 5 energies, 3 goals. EDA
+  taxonomy candidates are diagnostic, never automatic changes.
+
+## Period semantics
+
+A period is an **inclusive** date range `START_DATE .. END_DATE`. Every command
+takes `--start-date` / `--end-date` (some also `--date` or `--month`). Examples
+in this runbook use a full month; any inclusive range works.
+
+```
+START_DATE = 2026-09-01
+END_DATE   = 2026-09-30
+MONTH      = 2026-09
+Clock capacity = calendar_days × 24 h
+```
+
+Only **completed local calendar days** are processed. The current day is
+excluded unless a script is given `--include-today`.
 
 ---
 
 ## Phase A — Prepare
 
-### Step 1 — Define the reporting period
+### A1. Define the period
 
-Record:
+Record start date, end date, label (`<START>_<END>`), expected calendar days,
+and clock capacity.
 
-- start date
-- end date
-- reporting-period label
-- expected calendar days
+### A2. Python environment
 
-For a 15-day period:
+```powershell
+.\.venv\Scripts\Activate.ps1
+python --version
+```
 
-    Calendar days × 24h = clock capacity
+Compile the core scripts:
 
-### Step 2 — Prepare the Python environment
+```powershell
+python -m py_compile `
+    build_time_taxonomy.py fact_time_validator.py daily_time_builder.py `
+    activitywatch_pipeline.py import_desktop_activitywatch.py `
+    iphone_screen_time_ingest.py iphone_screen_time_promote.py `
+    iphone_screen_time_builder.py habit_offdevice_ingest.py `
+    habit_offdevice_builder.py integration_analysis.py `
+    integration_human_review.py integrated_daily_time_builder.py `
+    habit_manual_adjustments.py final_analysis.py detail_analysis.py `
+    exploratory_analysis.py standard_report.py period_close_validator.py
+```
 
-Confirm the project virtual environment is active.
+### A3. Confirm inputs / outputs exist
 
-Compile the principal scripts:
-
-    python -m py_compile ".\build_time_taxonomy.py"
-    python -m py_compile ".\final_analysis.py"
-    python -m py_compile ".\exploratory_analysis.py"
-    python -m py_compile ".\standard_report.py"
-
-### Step 3 — Confirm project inputs and outputs
-
-Confirm source folders, reference taxonomy, integration output folders, and
-the reporting-period destination exist.
+Source folders, `output/Reference/Taxonomy/`, `input/Integrated/*.csv`, and the
+reporting-period destination directories.
 
 ---
 
 ## Phase B — Collect sources
 
-### Step 4 — Collect ActivityWatch laptop data
+### B1. ActivityWatch — laptop  *(run on `AsusLaptop-Andres`)*
 
-Follow `ACTIVITYWATCH_LAPTOP.md`.
+```powershell
+python .\activitywatch_laptop.py --start-date "2026-09-01" --end-date "2026-09-30" --force
+python .\activitywatch_pipeline.py --month "2026-09"
+```
 
-Verify complete coverage for the reporting period.
+`activitywatch_pipeline.py` runs `activitywatch_raw_loader.py` →
+`fact_time_builder.py` → `fact_time_validator.py` for the laptop. It is
+laptop-only.
 
-### Step 5 — Collect ActivityWatch desktop data
+### B2. ActivityWatch — desktop  *(import from Desktop Tracker Collector)*
 
-Follow `ACTIVITYWATCH_DESKTOP.md`.
+On the desktop, run the collector (`collect_desktop.py` + `export_package.py`);
+transfer the package; then here:
 
-Verify complete coverage and correct device identity.
+```powershell
+python .\import_desktop_activitywatch.py --package "<package directory or .zip>" --dry-run
+python .\import_desktop_activitywatch.py --package "<package directory or .zip>"
+```
 
-### Step 6 — Collect Apple Screen Time
+The importer re-validates the manifest (contract version, device/source,
+per-file checksums, CSV headers, contiguous inclusive coverage, collector
+validation status) and **refuses any date inside a closed period** unless
+`--force`. It writes `output/Raw|Fact|Daily/.../DesktopPC-Andres/` and an
+`output/Imports/Import_Receipt_*.json`. Human review: confirm the receipt's
+period, `files_new`/`files_replaced`, and `empty_dates`.
 
-Export/copy the period data according to the Apple Screen Time procedure.
+### B3. Apple Screen Time — evidence
 
-Do not manually alter the source export.
+Save the original iPhone screenshots (do not alter them) under
+`input\iPhone\ScreenTime\2026-09\2026-09-DD\`.
 
-### Step 7 — Collect Habit / Off-Device data
+### B4. Habit / Off-Device — evidence
 
-Verify all manually recorded activities for the period.
+Save Habit screenshots under `input\Habit\2026-09\2026-09-DD\`. Review that all
+legitimate offline activity for the period is recorded (meals, showering,
+commuting, conversations, pauses, offline work/study).
 
-Include legitimate offline activities such as meals, showering, commuting,
-conversations, pauses, and other maintenance where tracked.
+### B5. Validate source coverage  *(human gate)*
 
-### Step 8 — Validate source coverage
-
-Check:
-
-- missing dates
-- duplicate files
-- impossible durations
-- unexpected device gaps
-- unexpected source changes
-
-Stop and investigate material source gaps before reconciliation.
-
----
-
-## Phase C — Process and integrate
-
-### Step 9 — Run source-specific processors
-
-Run the appropriate daily builders for each source.
-
-Never manually construct the integrated CSV.
-
-### Step 10 — Integrate daily source data
-
-Generate the integrated daily files for the reporting period.
-
-### Step 11 — Review raw integration
-
-Confirm:
-
-- expected number of daily files
-- expected source counts
-- expected device/source identity
-- no obvious duplicate ingestion
-- no unexplained missing dates
+Check for: missing dates, duplicate files, impossible durations, unexpected
+device gaps, unexpected source changes. Stop and investigate material gaps
+before processing.
 
 ---
 
-## Phase D — Reconciliation
+## Phase C — Process sources
 
-### Step 12 — Review and enter period adjustments
+### C1. Laptop / desktop Daily_Time
 
-Review known overstatements and attribution corrections.
+Laptop `Daily_Time` is produced by `activitywatch_pipeline.py` (B1). Desktop
+`Daily_Time` arrives in the import package (B2). If either is missing for a
+date, build it explicitly:
 
-Classification removal means the activity/category itself was overstated.
+```powershell
+python .\daily_time_builder.py --source asus_laptop --start-date "2026-09-01" --end-date "2026-09-30"
+python .\daily_time_builder.py --source desktop      --start-date "2026-09-01" --end-date "2026-09-30"
+```
 
-Attribution removal/redirect means the time should not be attributed to the
-current analytical owner.
+Optional explicit Fact validation:
 
-For the established Brother/Desktop correction:
+```powershell
+python .\fact_time_validator.py --source asus_laptop --start-date "2026-09-01" --end-date "2026-09-30"
+python .\fact_time_validator.py --source desktop      --start-date "2026-09-01" --end-date "2026-09-30"
+```
 
-- target ActivityWatch Desktop / Uncategorized when available;
-- do not reduce Apple Screen Time;
-- apply only the amount actually available;
-- preserve unapplied time in the audit.
+### C2. iPhone Screen Time
 
-### Step 13 — Build and validate taxonomy
+```powershell
+python .\iphone_screen_time_ingest.py --month "2026-09" --dry-run      # coverage check
+python .\iphone_screen_time_ingest.py --month "2026-09"                # OpenAI extraction ($ cost; needs OPENAI_API_KEY)
+```
 
-Run:
+**Human evidence review (gate):** compare each candidate extraction with the
+original screenshot — total Screen Time, category totals, unresolved residual,
+date. Do not promote a candidate that does not match the evidence.
 
-    python ".\build_time_taxonomy.py"
+```powershell
+python .\iphone_screen_time_promote.py --month "2026-09" --date "2026-09-01" [--date ...]   # reviewed dates
+python .\iphone_screen_time_categorize_unresolved.py --month "2026-09" --date "2026-09-01"  # positive residuals only
+python .\iphone_screen_time_builder.py --month "2026-09" --date "2026-09-01" [--date ...] --force
+```
 
-Expected result:
+`iphone_screen_time_rebuild.py --month "2026-09"` is a zero-API rebuild after
+taxonomy/logic changes that need no new screenshots.
 
-    TIME TAXONOMY VALIDATION PASSED
+### C3. Habit / Off-Device
 
-Taxonomy changes belong in the reference taxonomy, not in ad-hoc final CSV edits.
+```powershell
+python .\habit_offdevice_ingest.py --month "2026-09" --dry-run
+python .\habit_offdevice_ingest.py --month "2026-09"
+```
 
-### Step 14 — Run final reconciliation
+**Human review (gate):** check the extraction for completeness, duplicates,
+overstatement, and period boundaries. Then:
 
-Run:
+```powershell
+python .\habit_offdevice_builder.py --month "2026-09" --date "2026-09-01" [--date ...] --force
+```
 
-    python ".\final_analysis.py" `
-        --start-date "YYYY-MM-DD" `
-        --end-date "YYYY-MM-DD" `
-        --force
+### C4. Taxonomy
 
-### Step 15 — Review correction audit
+```powershell
+python .\build_time_taxonomy.py
+```
 
-Inspect `Final_Correction_Audit_*.csv`.
-
-Confirm each adjustment has:
-
-- requested amount
-- applied amount
-- unapplied amount
-- direction/type
-- status/reason
-
-No correction should silently manufacture time.
-
-### Step 16 — Review daily reconciliation
-
-Inspect `Final_Daily_Reconciliation_*.csv`.
-
-Investigate REVIEW days.
-
-A REVIEW flag is a condition requiring inspection, not automatically a failed
-period.
-
----
-
-## Phase E — Accounting and hierarchy validation
-
-### Step 17 — Validate the time universe
-
-Inspect `Final_Time_Universe_Reconciliation_*.csv`.
-
-The core relationship is:
-
-    Unique Tracked + Off-Device Life = Clock Capacity
-
-Tracked overlap is excluded from unique tracked time.
-
-Analytical activity may exceed capacity because analytical sources overlap.
-
-### Step 18 — Validate the analytical hierarchy
-
-Inspect the hierarchy output:
-
-    Device
-    Category
-    Subcategory
-    Domain
-    Energy
-    Goal
-
-and the combined hierarchy levels.
-
-Confirm that Off-Device Life has its intended dimensions.
+Expected: `TIME TAXONOMY VALIDATION PASSED`. Taxonomy changes belong in
+`output/Reference/Taxonomy/` reference CSVs, never in generated analysis CSVs.
 
 ---
 
-## Phase F — Exploration
+## Phase D — Integrate
 
-### Step 19 — Run exploratory analysis
+### D1. Build Integrated Daily Time
 
-Run:
+```powershell
+python .\integrated_daily_time_builder.py `
+    --start-date "2026-09-01" --end-date "2026-09-30" `
+    --manual-input ".\input\Integrated\Manual_Adjustments.csv" `
+    --classification-input ".\input\Integrated\Classification_Weights.csv"
+```
 
-    python ".\exploratory_analysis.py" `
-        --start-date "YYYY-MM-DD" `
-        --end-date "YYYY-MM-DD" `
-        --force
+Produces `output/Integrated/Integrated_Daily_Time_<date>.csv`. This must run
+**before** integration analysis.
 
-EDA is diagnostic. It does not automatically change taxonomy.
+### D2. Preliminary integration analysis + human-review template
 
-### Step 20 — Review taxonomy candidates
+```powershell
+python .\integration_analysis.py --start-date "2026-09-01" --end-date "2026-09-30" --unaccounted-target-hours 3
+python .\integration_human_review.py --start-date "2026-09-01" --end-date "2026-09-30"
+```
 
-Review large nodes, Uncategorized nodes, generic buckets, and unusual
-concentrations.
+### D3. Manual integration review  *(human gate)*
 
-A large node is not automatically a taxonomy problem.
+Review and edit as applicable:
 
-### Step 21 — Apply only intentional taxonomy changes
+```
+input\Integrated\Habit_Manual_Adjustments.csv
+input\Integrated\Manual_Adjustments.csv
+input\Integrated\Classification_Weights.csv
+output\Integrated\Analysis\Human_Review\Integration_Classification_Removals.csv
+```
 
-If a mapping is genuinely wrong:
+Rules: every adjustment needs a reason; do not delete records silently; do not
+edit generated final CSVs; do not use an adjustment to hide a source-processing
+bug; do not reduce one device merely because another observed the same time.
+For the Brother/Desktop correction: target ActivityWatch Desktop / Uncategorized
+when available; do **not** reduce Apple Screen Time; apply only the amount
+actually available; preserve unapplied time in the audit.
 
-1. change the taxonomy/reference mapping;
-2. rebuild and validate taxonomy;
-3. rerun final analysis;
-4. rerun EDA;
-5. rerun Standard Report.
+### D4. Apply Habit / manual adjustments
 
-Do not patch final CSVs manually.
+```powershell
+python .\habit_manual_adjustments.py `
+    --start-date "2026-09-01" --end-date "2026-09-30" `
+    --adjustment-file ".\input\Integrated\Habit_Manual_Adjustments.csv" --force
+```
 
----
-
-## Phase G — Reporting and close
-
-### Step 22 — Run the Standard Report
-
-Run:
-
-    python ".\standard_report.py" `
-        --start-date "YYYY-MM-DD" `
-        --end-date "YYYY-MM-DD" `
-        --force
-
-The Standard Report is intentionally concise.
-
-### Step 23 — Execute the Period-Close Checklist
-
-Use `PERIOD_CLOSE_CHECKLIST.md`.
-
-This is mandatory. It is the final operational gate before archiving and
-historical integration.
-
-### Step 24 — Archive the period
-
-Preserve:
-
-- source snapshots/exports as appropriate;
-- integrated data;
-- final analysis;
-- reconciliation files;
-- EDA;
-- Standard Report;
-- adjustment audit;
-- taxonomy version/state;
-- period notes.
-
-Do not overwrite a closed period without recording why.
+Re-run D1 if the adjustments changed the integrated inputs.
 
 ---
 
-## Phase H — Historical and versioned reporting
-Give me 
-### Step 25 — Integrate with historical data
+## Phase E — Final reconciliation
 
-Historical integration is a separate process from period reconciliation.
+### E1. Run
 
-For the initial implementation, the historical dataset covers approximately
-one year and may require a controlled manual integration.
+```powershell
+python .\final_analysis.py --start-date "2026-09-01" --end-date "2026-09-30" --force
+```
 
-Use:
+Output: `output/Integrated/Analysis/Final/2026-09-01_2026-09-30/` containing
+`Final_Analysis_*`, `Final_Analysis_By_[Device_]Category_Subcategory_Domain_Energy_Goal_*`,
+`Final_Source_Reconciliation_*`, `Final_Daily_Reconciliation_*`,
+`Final_Correction_Audit_*`, `Final_Attribution_Removals_*`,
+`Final_Time_Universe_Reconciliation_*`, `Final_Reconciliation_*`,
+`Final_Analysis_Report_*.txt`, plus a nested `Integrated/` copy of the daily
+inputs and the `Integration_*` diagnostic files.
 
-    docs/HISTORICAL_DATA_INTEGRATION.md
+### E2. Review  *(human gate)*
 
-Do not mix historical consolidation with source correction logic.
+- **Correction audit** — every adjustment shows requested / applied / unapplied
+  / direction / status. No correction silently manufactures time.
+- **Daily reconciliation** — investigate every `REVIEW` day. A REVIEW flag is a
+  condition to understand, not an automatic failure.
+- **Time universe** — `Unique Tracked + Off-Device Life = Clock Capacity`;
+  tracked overlap excluded from unique tracked.
+- **Attribution / classification removals**, **overlap**, **uncovered time**,
+  **Off-Device Life**, **unexpected source/device totals**.
 
-### Step 26 — Commit and document the period
+---
 
-Before committing:
+## Phase F — Hierarchy, EDA, taxonomy loop
 
-- verify the checklist is complete;
-- document intentional taxonomy changes;
-- document reconciliation exceptions;
-- document any manual historical integration work;
-- verify generated outputs;
-- review git diff;
-- commit the period and process changes together when appropriate.
+### F1. Detail hierarchy
+
+```powershell
+python .\detail_analysis.py --start-date "2026-09-01" --end-date "2026-09-30" --force
+```
+
+Review across `Device → Category → Subcategory → Domain → Energy → Goal` and the
+category-first levels. Off-Device Life must have meaningful dimensions at the
+deepest level.
+
+### F2. EDA
+
+```powershell
+python .\exploratory_analysis.py --start-date "2026-09-01" --end-date "2026-09-30" --force
+```
+
+Diagnostic only. Investigate large contributors, concentration, Uncategorized,
+generic buckets, taxonomy candidates, domain/energy/goal distributions. A large
+node is not automatically a taxonomy problem.
+
+### F3. Taxonomy review loop  *(only for a genuine mapping error)*
+
+```
+EDA finding → human review → edit output/Reference/Taxonomy/ →
+build_time_taxonomy.py → final_analysis.py → detail_analysis.py →
+exploratory_analysis.py → standard_report.py → period_close_validator.py
+```
+
+Never patch a generated CSV to change analytical meaning.
+
+---
+
+## Phase G — Report and close
+
+### G1. Standard Report
+
+```powershell
+python .\standard_report.py --start-date "2026-09-01" --end-date "2026-09-30" --force
+```
+
+Intentionally concise: where time went; investment / maintenance / consumption
+balance; recovery; discretionary drains; next-period attention areas. Deeper
+questions belong in EDA.
+
+### G2. Period-close validation
+
+```powershell
+python .\period_close_validator.py `
+    --start-date "2026-09-01" --end-date "2026-09-30" `
+    --require-eda --require-standard-report
+```
+
+Success ends with `RESULT: PERIOD CLOSE VALIDATION PASSED.` The validator checks
+accounting and structural integrity; it does not require EDA text markers.
+
+### G3. Period-Close Checklist
+
+Execute `docs/PERIOD_CLOSE_CHECKLIST.md` in full. This is the mandatory final
+gate before archiving and historical integration.
+
+### G4. Archive
+
+Preserve source evidence, the desktop import receipt, integrated data, final
+analysis, reconciliation files, hierarchy, EDA, Standard Report, adjustment
+audit, taxonomy version/state, and period notes. Never overwrite a closed
+period without recording why.
+
+---
+
+## Phase H — Historical, comparison, commit
+
+### H1. Historical integration
+
+Separate from period reconciliation. Use `docs/HISTORICAL_DATA_INTEGRATION.md`.
+Do it after the current period is internally closed. Do not mix historical
+consolidation into `final_analysis.py`.
+
+### H2. Period-to-period comparison (optional)
+
+```powershell
+python .\variation_analysis.py `
+    --period-a-start 2026-08-01 --period-a-end 2026-08-31 `
+    --period-b-start 2026-09-01 --period-b-end 2026-09-30
+```
+
+Compares two frozen final-analysis periods → `output/Integrated/Analysis/Variation/`.
+
+### H3. Commit
+
+```powershell
+git status
+git diff --stat
+git diff
+git status --short
+```
+
+Add only intended code/doc changes. `input/` and `output/` are git-ignored;
+never `git add .` blindly. Commit period and process changes together when
+appropriate.
 
 ---
 
 ## Canonical command order
 
-    build taxonomy
+```
+laptop ActivityWatch  +  import desktop package
         ↓
-    final analysis
+daily_time_builder (as needed)  +  fact_time_validator
         ↓
-    time-universe validation
+iPhone: ingest → review → promote → categorize residuals → builder
+Habit:  ingest → review → builder
         ↓
-    EDA
+build_time_taxonomy
         ↓
-    taxonomy review
+integrated_daily_time_builder            ← produces Integrated_Daily_Time
         ↓
-    final analysis again if taxonomy changed
+integration_analysis  +  integration_human_review
         ↓
-    Standard Report
+manual review → habit_manual_adjustments → (rebuild integrated daily)
         ↓
-    Period-Close Checklist
+final_analysis
         ↓
-    archive
+detail_analysis → exploratory_analysis
         ↓
-    historical integration
+(taxonomy loop if a mapping is genuinely wrong)
         ↓
-    commit
+standard_report
+        ↓
+period_close_validator
+        ↓
+Period-Close Checklist → archive → historical integration → commit
+```
+
+## Which machine runs what
+
+| Step | Machine |
+|---|---|
+| `activitywatch_laptop.py`, `activitywatch_pipeline.py` | Laptop (`AsusLaptop-Andres`) — needs the local ActivityWatch server |
+| Desktop collection (`collect_desktop.py`, `export_package.py`) | Desktop (`DesktopPC-Andres`) — separate project |
+| `import_desktop_activitywatch.py` and everything downstream | Laptop / central — pure file processing |
+| iPhone / Habit ingest | Laptop / central — needs `OPENAI_API_KEY` + internet |
 
 ---
 
 ## Non-negotiable rules
 
-1. Do not manually edit final analytical CSVs.
+1. Do not manually edit generated analytical CSVs.
 2. Do not reduce Apple Screen Time for the Brother/Desktop correction.
 3. Do not treat Off-Device Life as missing time.
 4. Do not force analytical activity to equal clock capacity.
@@ -343,5 +457,6 @@ Before committing:
 6. Do not diagnose burnout from a single period.
 7. Do not discard unapplied adjustment time.
 8. Do not make undocumented manual changes to a closed period.
-9. Do not let the Standard Report become the EDA.
-10. Do not rely on chat history to reproduce the pipeline.
+9. Do not import desktop data that overlaps a closed period without recording why.
+10. Do not let the Standard Report become the EDA.
+11. Do not rely on chat history — a closed period must be reproducible from this runbook.

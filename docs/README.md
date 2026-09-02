@@ -1,64 +1,65 @@
 # Habit & Wellness System Tracker
 
-This repository contains the operational pipeline for collecting, integrating,
-reconciling, analyzing, and reporting personal time data.
+Central project for integrating, reconciling, analyzing, and reporting personal
+time data across ActivityWatch (laptop + desktop), Apple Screen Time, and
+Habit / Off-Device tracking.
+
+## Two projects
+
+| Project | Repo | Responsibility |
+|---|---|---|
+| **System Tracker** | this repo | Import desktop data · laptop ActivityWatch · iPhone · Habit · taxonomy · integration · reconciliation · final / detail / EDA analysis · Standard Report · period close · historical integration · budgets |
+| **Desktop Tracker Collector** | `../Desktop Tracker Collector/` | Desktop ActivityWatch only: collect → Raw → Fact_Time → Daily_Time → validate → portable export package |
+
+The desktop PC does not need this repo. It produces a versioned export package
+that System Tracker imports with `import_desktop_activitywatch.py`.
 
 ## Canonical workflow
 
-1. Prepare reporting period
-2. Prepare Python environment
-3. Collect ActivityWatch laptop data
-4. Collect ActivityWatch desktop data
-5. Collect Apple Screen Time data
-6. Collect Habit / Off-Device data
-7. Validate source coverage
-8. Run source-specific processors
-9. Integrate daily source data
-10. Review raw integration
-11. Review and enter period adjustments
-12. Build and validate taxonomy
-13. Run final reconciliation
-14. Review correction audit
-15. Review daily reconciliation
-16. Validate the time universe
-17. Validate the analytical hierarchy
-18. Run exploratory analysis
-19. Review taxonomy candidates
-20. Apply only intentional taxonomy changes
-21. Re-run affected analysis
-22. Run the Standard Report
-23. Execute the Period-Close Checklist
-24. Archive the period
-25. Integrate with historical data
-26. Commit and document the period
+See **`docs/SYSTEM_TRACKER_RUNBOOK.md`** — the single operational runbook.
+Summary:
+
+1. Prepare period + environment
+2. Collect: laptop ActivityWatch · **import desktop package** · iPhone screenshots · Habit screenshots
+3. Validate source coverage *(human gate)*
+4. Process: Daily_Time · iPhone (ingest → review → promote → build) · Habit (ingest → review → build) · taxonomy
+5. Integrate: `integrated_daily_time_builder.py` → `integration_analysis.py` + `integration_human_review.py`
+6. Manual integration review *(human gate)* → apply adjustments → rebuild integrated daily
+7. `final_analysis.py` → review correction audit / daily reconciliation / time universe *(human gate)*
+8. `detail_analysis.py` → `exploratory_analysis.py` → taxonomy-review loop only for a genuine mapping error
+9. `standard_report.py` → `period_close_validator.py`
+10. Period-Close Checklist → archive → historical integration → commit
 
 ## Accounting model
 
-The elapsed-time universe is the source of truth:
+```
+Clock Capacity = Unique Tracked Time + Off-Device Life
+Unique Tracked Time = Corrected Tracked Time - Tracked Overlap
+```
 
-    Clock Capacity = Unique Tracked Time + Off-Device Life
-
-and:
-
-    Unique Tracked Time = Corrected Tracked Time - Tracked Overlap
-
-Analytical activity can exceed clock capacity because multiple sources can
-observe the same elapsed time.
+Analytical activity can exceed clock capacity because multiple sources observe
+the same elapsed time. Taxonomy: 12 categories, 7 domains, 5 energies, 3 goals.
 
 ## Documentation
 
-- `docs/SYSTEM_TRACKER_RUNBOOK.md` — complete operating procedure.
-- `docs/PERIOD_CLOSE_CHECKLIST.md` — mandatory period-close checklist.
-- `docs/PROCESS_MAP.md` — pipeline architecture and dependencies.
-- `docs/DATA_COLLECTION.md` — source collection procedure.
-- `docs/SOURCE_PROCESSING.md` — source-specific processing.
-- `docs/INTEGRATION_AND_RECONCILIATION.md` — consolidation and adjustment rules.
-- `docs/TAXONOMY_AND_EDA.md` — taxonomy, hierarchy, and EDA.
-- `docs/REPORTING.md` — Standard Report and recurring KPI definitions.
-- `docs/HISTORICAL_DATA_INTEGRATION.md` — one-year historical integration procedure.
-- `docs/BUDGET_DESIGN.md` — future budget design based on current goals.
-- `docs/TROUBLESHOOTING.md` — common failures and recovery.
-- `docs/CHANGE_CONTROL.md` — rules for changing the analytical system.
-- `docs/GLOSSARY.md` — canonical terminology.
+- `SYSTEM_TRACKER_RUNBOOK.md` — canonical operating procedure
+- `PERIOD_CLOSE_CHECKLIST.md` — mandatory period-close checklist
+- `PROCESS_MAP.md` — architecture, dependency graph, machine map
+- `DATA_COLLECTION.md` — source collection and the desktop import
+- `ACTIVITYWATCH_LAPTOP.md` — laptop machine / ActivityWatch facts
+- `SOURCE_PROCESSING.md` — per-source normalization
+- `INTEGRATION_AND_RECONCILIATION.md` — consolidation and adjustment rules
+- `TAXONOMY_AND_EDA.md` — taxonomy, hierarchy, EDA
+- `REPORTING.md` — Standard Report and recurring KPI definitions
+- `HISTORICAL_DATA_INTEGRATION.md` — one-year historical integration procedure
+- `BUDGET_DESIGN.md` — future budget design
+- `TROUBLESHOOTING.md` — common failures and recovery
+- `CHANGE_CONTROL.md` — rules for changing the analytical system
+- `GLOSSARY.md` — canonical terminology
+- `PYTHON_ENVIRONMENT.md` — per-machine Python environment
+- `POWER_BI_DASHBOARD_FUTURE.md` — future dashboard notes
+- `history/` — retired documents and scripts (reference only)
 
-Existing source-specific documentation should remain alongside these documents.
+Desktop collection is documented in the Desktop Tracker Collector's own
+`docs/` (`COLLECTION_RUNBOOK.md`, `EXPORT_CONTRACT.md`, `DESKTOP_MACHINE.md`,
+`TROUBLESHOOTING.md`).
