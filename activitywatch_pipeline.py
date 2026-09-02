@@ -22,7 +22,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from tracker_config import latest_completed_date
+from config.tracker_config import latest_completed_date
 
 
 PROJECT_DIRECTORY = Path(__file__).resolve().parent

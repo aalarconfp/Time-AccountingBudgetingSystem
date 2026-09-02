@@ -13,8 +13,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INPUT_ROOT = PROJECT_ROOT / "input"
 OUTPUT_ROOT = PROJECT_ROOT / "output"
 
+# ActivityWatch has no input/ directory: laptop data is read live from the
+# local ActivityWatch server, and desktop data arrives via the Desktop Tracker
+# Collector import (import_desktop_activitywatch.py) straight into output/Raw.
 ACTIVITYWATCH_INPUT_ROOT = INPUT_ROOT / "ActivityWatch"
-APPLE_SCREEN_TIME_INPUT_ROOT = INPUT_ROOT / "AppleScreenTime"
+APPLE_SCREEN_TIME_INPUT_ROOT = INPUT_ROOT / "iPhone" / "ScreenTime"
 HABIT_INPUT_ROOT = INPUT_ROOT / "Habit"
 
 RAW_ROOT = OUTPUT_ROOT / "Raw"

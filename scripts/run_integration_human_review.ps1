@@ -1,9 +1,12 @@
-# FILE: scripts/run_habit_human_review.ps1
+# FILE: scripts/run_integration_human_review.ps1
 
 [CmdletBinding()]
 param(
-    [string]$StartDate = "2026-08-01",
-    [string]$EndDate = "2026-08-15"
+    [Parameter(Mandatory = $true)]
+    [string]$StartDate,
+
+    [Parameter(Mandatory = $true)]
+    [string]$EndDate
 )
 
 $ErrorActionPreference = "Stop"
