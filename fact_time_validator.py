@@ -1,4 +1,4 @@
-# G:\My Drive\Personal Life\Habit and Wellness\System\_Tracker\fact_time_validator.py
+# G:\My Drive\Personal Life\Habit and Wellness\System_Tracker\fact_time_validator.py
 
 """Validate Fact_Time datasets against Raw ActivityWatch datasets.
 
@@ -14,15 +14,25 @@ The validator checks:
 - Total duration reconciliation.
 - Completed-day processing rules.
 
+Validation is source-aware and supports the configured ActivityWatch devices:
+
+    asus_laptop -> AsusLaptop-Andres
+    desktop     -> DesktopPC-Andres
+
 Examples:
 
     python fact_time_validator.py
 
-    python fact_time_validator.py --date 2026-08-10
+    python fact_time_validator.py --source asus_laptop
 
-    python fact_time_validator.py --start-date 2026-08-01 --end-date 2026-08-10
+    python fact_time_validator.py --source desktop
 
-    python fact_time_validator.py --include-today
+    python fact_time_validator.py --source asus_laptop --date 2026-08-10
+
+    python fact_time_validator.py \
+        --source desktop \
+        --start-date 2026-08-16 \
+        --end-date 2026-08-31
 
     python fact_time_validator.py --date 2026-08-10 --strict
 """
@@ -36,19 +46,68 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from tracker_config import (
-    FACT_TIME_COLUMNS,
-    FACT_TIME_DIRECTORY,
-    FACT_TIME_OPTIONAL_COLUMNS,
-    FACT_TIME_REQUIRED_COLUMNS,
-    OUTPUT_DIRECTORY,
-    RAW_ACTIVITYWATCH_REQUIRED_COLUMNS,
-    TIMESTAMP_TOLERANCE_SECONDS,
-    fact_time_path,
-    latest_completed_date,
-    raw_activitywatch_path,
-    today_local,
+from config.paths import (
+    get_activitywatch_raw_path,
+    get_fact_time_root,
 )
+from config.sources import (
+    SourceDefinition,
+    SourceType,
+    get_source_definition,
+)
+
+
+FACT_TIME_COLUMNS = [
+    "Fact_Time_ID",
+    "Date",
+    "Start",
+    "End",
+    "Duration_sec",
+    "Device",
+    "Source",
+    "Source_Bucket",
+    "Source_Event_ID",
+    "App",
+    "Window_Title",
+    "Category",
+    "Subcategory",
+]
+
+FACT_TIME_REQUIRED_COLUMNS = {
+    "Fact_Time_ID",
+    "Date",
+    "Start",
+    "End",
+    "Duration_sec",
+    "Device",
+    "Source",
+    "Source_Bucket",
+    "Source_Event_ID",
+    "App",
+    "Category",
+}
+
+FACT_TIME_OPTIONAL_COLUMNS = {
+    "Window_Title",
+    "Subcategory",
+}
+
+RAW_ACTIVITYWATCH_REQUIRED_COLUMNS = {
+    "Date",
+    "Start",
+    "End",
+    "Duration_sec",
+    "Device",
+    "Source",
+    "Bucket",
+    "AW_Event_ID",
+    "App",
+    "Window_Title",
+    "AW_Category",
+    "AW_Subcategory",
+}
+
+TIMESTAMP_TOLERANCE_SECONDS = 0.01
 
 
 class ValidationResult:
@@ -63,11 +122,17 @@ class ValidationResult:
         """Return whether validation passed."""
         return not self.errors
 
-    def error(self, message: str) -> None:
+    def error(
+        self,
+        message: str,
+    ) -> None:
         """Record a validation error."""
         self.errors.append(message)
 
-    def warning(self, message: str) -> None:
+    def warning(
+        self,
+        message: str,
+    ) -> None:
         """Record a validation warning."""
         self.warnings.append(message)
 
@@ -76,6 +141,19 @@ def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Validate Fact_Time datasets."
+    )
+
+    parser.add_argument(
+        "--source",
+        choices=[
+            "asus_laptop",
+            "desktop",
+        ],
+        default="asus_laptop",
+        help=(
+            "Configured ActivityWatch source. "
+            "Default: asus_laptop."
+        ),
     )
 
     date_group = parser.add_mutually_exclusive_group()
@@ -107,7 +185,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Treat missing Raw_ActivityWatch files as errors.",
+        help="Treat missing Raw ActivityWatch files as errors.",
     )
 
     return parser.parse_args()
@@ -127,16 +205,64 @@ def parse_date(
         ) from exc
 
 
-def discover_fact_dates() -> list[date]:
-    """Discover dates from Fact_Time CSV files."""
-    if not FACT_TIME_DIRECTORY.exists():
+def get_source(
+    source_name: str,
+) -> SourceDefinition:
+    """Return and validate the configured ActivityWatch source."""
+    source = get_source_definition(source_name)
+
+    if source.source is not SourceType.ACTIVITYWATCH:
+        raise ValueError(
+            f"Source '{source_name}' is not an ActivityWatch source."
+        )
+
+    if source.device is None:
+        raise ValueError(
+            f"ActivityWatch source '{source_name}' has no device."
+        )
+
+    return source
+
+
+def get_fact_time_path(
+    source: SourceDefinition,
+    target_date: date,
+) -> Path:
+    """Return the canonical Fact_Time path for a source and date."""
+    if source.device is None:
+        raise ValueError(
+            f"Source '{source.source.value}' has no device."
+        )
+
+    return (
+        get_fact_time_root()
+        / "ActivityWatch"
+        / source.device
+        / f"Fact_Time_{target_date.isoformat()}.csv"
+    )
+
+
+def discover_fact_dates(
+    source: SourceDefinition,
+) -> list[date]:
+    """Discover dates from the source's Fact_Time CSV files."""
+    fact_directory = (
+        get_fact_time_root()
+        / "ActivityWatch"
+        / (
+            source.device
+            if source.device is not None
+            else ""
+        )
+    )
+
+    if not fact_directory.exists():
         return []
 
     dates: list[date] = []
-
     prefix = "Fact_Time_"
 
-    for path in FACT_TIME_DIRECTORY.glob(
+    for path in fact_directory.glob(
         f"{prefix}*.csv"
     ):
         date_text = path.stem[len(prefix):]
@@ -151,8 +277,19 @@ def discover_fact_dates() -> list[date]:
     return sorted(set(dates))
 
 
+def today_local() -> date:
+    """Return today's local calendar date."""
+    return datetime.now().astimezone().date()
+
+
+def latest_completed_date() -> date:
+    """Return the latest fully completed calendar day."""
+    return today_local() - timedelta(days=1)
+
+
 def resolve_target_dates(
     args: argparse.Namespace,
+    source: SourceDefinition,
 ) -> list[date]:
     """Resolve requested dates using the completed-day policy."""
     latest_allowed = (
@@ -223,7 +360,7 @@ def resolve_target_dates(
 
     return [
         target_date
-        for target_date in discover_fact_dates()
+        for target_date in discover_fact_dates(source)
         if target_date <= latest_allowed
     ]
 
@@ -245,7 +382,10 @@ def read_csv(
         if reader.fieldnames is None:
             return [], []
 
-        return list(reader), list(reader.fieldnames)
+        return (
+            list(reader),
+            list(reader.fieldnames),
+        )
 
 
 def normalize_text(
@@ -392,7 +532,6 @@ def validate_fact_rows(
     expected_date = target_date.isoformat()
 
     fact_ids: set[str] = set()
-
     source_keys: set[tuple[str, str]] = set()
 
     total_duration = 0.0
@@ -649,21 +788,37 @@ def validate_source_reconciliation(
 
 def validate_one_date(
     target_date: date,
+    source: SourceDefinition,
     result: ValidationResult,
     strict: bool,
 ) -> dict[str, Any]:
-    """Validate one date."""
-    fact_path = fact_time_path(
-        target_date
+    """Validate one date for one ActivityWatch source."""
+    if source.device is None:
+        raise ValueError(
+            f"Source '{source.source.value}' has no device."
+        )
+
+    fact_path = get_fact_time_path(
+        source=source,
+        target_date=target_date,
     )
 
-    raw_path = raw_activitywatch_path(
-        target_date
+    raw_path = get_activitywatch_raw_path(
+        device=source.device,
+        target_date=target_date,
     )
 
     print()
     print(
         f"--- {target_date.isoformat()} ---"
+    )
+
+    print(
+        f"Source    : {source.source.value}"
+    )
+
+    print(
+        f"Device    : {source.device}"
     )
 
     print(
@@ -773,14 +928,11 @@ def validate_one_date(
         f"{format_duration(reconciliation['raw_duration'])}"
     )
 
-    if result.passed:
-        print(
-            "PASS  Date passed validation."
-        )
-    else:
-        print(
-            "FAIL  Validation errors detected."
-        )
+    print(
+        "PASS  Date passed validation."
+        if result.passed
+        else "FAIL  Validation errors detected."
+    )
 
     return {
         "status": (
@@ -796,12 +948,23 @@ def validate_one_date(
 
 def print_summary(
     target_dates: list[date],
+    source: SourceDefinition,
     result: ValidationResult,
 ) -> None:
     """Print the final validation summary."""
     print()
     print("=" * 60)
     print("=== Fact_Time Validation Summary ===")
+
+    print(
+        f"Source        : "
+        f"{source.source.value}"
+    )
+
+    print(
+        f"Device        : "
+        f"{source.device}"
+    )
 
     print(
         f"Dates checked : "
@@ -863,12 +1026,27 @@ def main() -> int:
     args = parse_arguments()
 
     try:
+        source = get_source(
+            args.source
+        )
+
         target_dates = resolve_target_dates(
-            args
+            args=args,
+            source=source,
         )
 
         print("# Fact_Time Validator")
         print()
+
+        print(
+            f"Source  : "
+            f"{args.source}"
+        )
+
+        print(
+            f"Device  : "
+            f"{source.device}"
+        )
 
         if not target_dates:
             print(
@@ -896,11 +1074,8 @@ def main() -> int:
         )
 
         print(
-            f"Output: {OUTPUT_DIRECTORY}"
-        )
-
-        print(
-            f"Fact  : {FACT_TIME_DIRECTORY}"
+            f"Fact root : "
+            f"{get_fact_time_root()}"
         )
 
         if not target_dates:
@@ -915,12 +1090,14 @@ def main() -> int:
         for target_date in target_dates:
             validate_one_date(
                 target_date=target_date,
+                source=source,
                 result=result,
                 strict=args.strict,
             )
 
         print_summary(
             target_dates=target_dates,
+            source=source,
             result=result,
         )
 

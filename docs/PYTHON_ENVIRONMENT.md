@@ -10,20 +10,12 @@ Do not synchronize `.venv` through Google Drive or Git.
 
 ## Python baseline
 
-Both machines use:
+Each machine has its own Python installation and project-local `.venv`.
 
-- Python 3.13.x
-- Anaconda as the base Python installation
-- A project-local `.venv`
+The Python version and base interpreter may differ between machines. The `.venv` must always be created from a valid Python installation available on the machine where the pipeline is being executed.
 
-Expected base interpreter:
+The current Desktop environment uses:
 
 ```text
-C:\ProgramData\anaconda3\python.exe
-
-## One-command machine setup
-
-The project includes:
-
-```text
-scripts/setup_machine.ps1
+Python 3.14.x
+C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe

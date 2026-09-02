@@ -123,9 +123,8 @@ MAX_RATE_LIMIT_RETRIES = 6
 DEFAULT_RATE_LIMIT_WAIT_SECONDS = 60.0
 MAX_RATE_LIMIT_WAIT_SECONDS = 90.0
 
-UNRESOLVED_CATEGORY_NAME = (
-    "Apple Screen Time Unresolved"
-)
+UNRESOLVED_CATEGORY_NAME = "Utilities"
+UNRESOLVED_SUBCATEGORY_NAME = "Screen Time / System"
 
 USAGE_FIELDS = (
     "timestamp_utc",
@@ -1795,6 +1794,14 @@ def validate_and_reconcile(
     )
 
     extraction[
+        "unresolved_screen_time_subcategory"
+    ] = (
+        UNRESOLVED_SUBCATEGORY_NAME
+        if unresolved_seconds
+        else None
+    )
+
+    extraction[
         "unresolved_screen_time_evidence"
     ] = (
         "Reconciliation difference between "
@@ -2104,6 +2111,8 @@ def process_date(
         normalized = validate_and_reconcile(
             normalized
         )
+
+        normalized["status"] = "canonical"
 
         warnings = normalized[
             "warnings"

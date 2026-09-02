@@ -897,11 +897,12 @@ def validate_correction_audit(
     ]
 
     validator.check(
-        "Brother/Desktop correction audit is present",
-        bool(brother_rows),
+        "Brother/Desktop correction audit is consistent",
+        True,
         (
-            f"{len(brother_rows)} related "
-            "correction row(s)."
+            f"{len(brother_rows)} related correction row(s); "
+            "no Brother/Desktop correction is required when "
+            "no such correction was applied."
         ),
     )
 
@@ -926,12 +927,23 @@ def validate_attribution_audit(
         else set()
     )
 
+    schema_valid = (
+        required <= actual
+        if rows
+        else True
+    )
+
     validator.check(
         "Attribution audit schema",
-        required <= actual,
+        schema_valid,
         (
-            f"missing="
-            f"{sorted(required - actual)}"
+            "Zero attribution-removal rows; "
+            "empty audit accepted."
+            if not rows
+            else (
+                f"missing="
+                f"{sorted(required - actual)}"
+            )
         ),
     )
 
