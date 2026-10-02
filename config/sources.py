@@ -5,6 +5,8 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from config.settings import DESKTOP_DEVICE, LAPTOP_DEVICE
+
 
 class ObservationType(StrEnum):
     """Types of observations entering the tracking system."""
@@ -36,7 +38,7 @@ class SourceDefinition:
 ASUS_LAPTOP = SourceDefinition(
     source=SourceType.ACTIVITYWATCH,
     observation_type=ObservationType.DEVICE_TIME,
-    device="AsusLaptop-Andres",
+    device=LAPTOP_DEVICE,
     context="Work",
     description="ActivityWatch data from the primary work/project laptop.",
 )
@@ -44,7 +46,7 @@ ASUS_LAPTOP = SourceDefinition(
 DESKTOP = SourceDefinition(
     source=SourceType.ACTIVITYWATCH,
     observation_type=ObservationType.DEVICE_TIME,
-    device="DesktopPC-Andres",
+    device=DESKTOP_DEVICE,
     context="Personal",
     description="ActivityWatch data from the personal desktop.",
 )

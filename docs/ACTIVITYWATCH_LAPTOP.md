@@ -1,5 +1,5 @@
 Machine
-AsusLaptop-Andres
+<laptop device> (configured in config/local_settings.json)
 
 Context
 Work
@@ -8,14 +8,14 @@ ActivityWatch
 http://localhost:5600
 
 Bucket
-aw-watcher-window_AsusLaptop-Andres
-aw-watcher-afk_AsusLaptop-Andres
+aw-watcher-window_<laptop device>
+aw-watcher-afk_<laptop device>
 
 Python
 Project .venv
 
 Canonical Raw
-output/Raw/ActivityWatch/AsusLaptop-Andres/
+output/Raw/ActivityWatch/<laptop device>/
 
 Fact_Time
-output/Fact/Time/ActivityWatch/AsusLaptop-Andres/
+output/Fact/Time/ActivityWatch/<laptop device>/

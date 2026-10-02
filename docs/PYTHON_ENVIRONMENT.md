@@ -3,13 +3,13 @@
 ## Purpose
 
 The Python environment is machine-local. Do not synchronize `.venv` through
-Google Drive or Git.
+cloud-synced folders or Git.
 
 ## Two environments
 
 | Project | Location | Dependencies |
 |---|---|---|
-| **System Tracker** (this repo) | `System_Tracker\.venv` | `aw-client`, `openai`, `tzdata` (`openai` is only used by the iPhone and Habit ingest steps) |
+| **System Tracker** (this repo) | `System_Tracker\.venv` | `aw-client`, `openai`, `Pillow`, `tzdata` (`openai` is only used by the iPhone ingest step; `Pillow` by the iPhone and Habit screenshot ingest steps) |
 | **Desktop Tracker Collector** | `Desktop Tracker Collector\.venv` | `aw-client`, `tzdata` only — no `openai`, no dependency on System Tracker |
 
 The desktop PC needs **only** the Desktop Tracker Collector environment to
@@ -23,7 +23,7 @@ version and base interpreter may differ between machines; create the `.venv`
 from a valid interpreter present on the machine where the code runs.
 
 - Laptop / central: Python 3.13+ (`System_Tracker\.venv`).
-- Desktop: Python 3.14.x — `C:\Users\User\AppData\Local\Python\pythoncore-3.14-64\python.exe`.
+- Desktop: Python 3.14.x (any local interpreter).
 
 `import_desktop_activitywatch.py` and `desktop_export_contract.py` are
 stdlib-only so the import step never depends on the collector's environment.

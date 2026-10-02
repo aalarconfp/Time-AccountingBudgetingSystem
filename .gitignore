@@ -5,18 +5,29 @@ __pycache__/
 *.py[cod]
 *.pyo
 .venv/
+.pytest_cache/
 venv/
 
 # Secrets
 .env
 .env.*
 !.env.example
+*.pem
+*.key
 
 # Personal source data
 input/
 
 # Generated data
 output/
+
+# Desktop collector export packages (contain personal activity data)
+*.zip
+
+# Personal reports / office documents (project docs are Markdown)
+*.docx
+*.xlsx
+~$*
 
 # Local development
 .vscode/
@@ -25,10 +36,17 @@ output/
 # Local test/debug files
 *.log
 *.tmp
+*.bak
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Local secrets/config overrides
 *.local
+# Per-installation device IDs and attribution rules (see config/local_settings.example.json)
+config/local_settings.json
+
+# Private, period-specific documents kept outside the public release
+private/

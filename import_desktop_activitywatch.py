@@ -4,9 +4,9 @@ Consumes the versioned package produced by ``export_package.py`` in the
 Desktop Tracker Collector project and copies its validated ActivityWatch
 data into this project's ``output/`` tree:
 
-    <package>/Raw/ActivityWatch/DesktopPC-Andres/...   ->  output/Raw/...
-    <package>/Fact/Time/ActivityWatch/DesktopPC-Andres/...  ->  output/Fact/...
-    <package>/Daily/Time/ActivityWatch/DesktopPC-Andres/... ->  output/Daily/...
+    <package>/Raw/ActivityWatch/<desktop device>/...   ->  output/Raw/...
+    <package>/Fact/Time/ActivityWatch/<desktop device>/...  ->  output/Fact/...
+    <package>/Daily/Time/ActivityWatch/<desktop device>/... ->  output/Daily/...
 
 This module is stdlib-only and does NOT depend on the Desktop Tracker
 Collector's Python environment. The export contract is vendored as
@@ -24,7 +24,7 @@ Safety
 
 Examples
 --------
-    python import_desktop_activitywatch.py --package "D:/Transfer/DesktopPC-Andres__2026-09-01__2026-09-30"
+    python import_desktop_activitywatch.py --package "<transfer dir>/Desktop__2026-09-01__2026-09-30"
     python import_desktop_activitywatch.py --package export.zip --dry-run
 """
 

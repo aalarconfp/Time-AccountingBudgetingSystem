@@ -36,8 +36,8 @@ def make_package(root: Path, start="2026-09-01", end="2026-09-03") -> Path:
         raw_rel = f"{contract.RAW_SUBPATH}/{contract.raw_filename(d)}"
         fact_rel = f"{contract.FACT_SUBPATH}/{contract.fact_filename(d)}"
         daily_rel = f"{contract.DAILY_SUBPATH}/{contract.daily_filename(d)}"
-        _write(pkg / raw_rel, RAW_HEADER + "2026-09-01,x,y,60,DesktopPC-Andres,ActivityWatch,b,e1,App,Win,Cat,Sub\n")
-        _write(pkg / fact_rel, FACT_HEADER + "f1,2026-09-01,x,y,60,DesktopPC-Andres,ActivityWatch,b,e1,App,Win,Cat,Sub\n")
+        _write(pkg / raw_rel, RAW_HEADER + "2026-09-01,x,y,60,Desktop,ActivityWatch,b,e1,App,Win,Cat,Sub\n")
+        _write(pkg / fact_rel, FACT_HEADER + "f1,2026-09-01,x,y,60,Desktop,ActivityWatch,b,e1,App,Win,Cat,Sub\n")
         _write(pkg / daily_rel, DAILY_HEADER + "2026-09-01,Cat,Sub,60\n")
         for rel in (raw_rel, fact_rel, daily_rel):
             p = pkg / rel
@@ -123,7 +123,7 @@ class ManifestTests(BaseCase):
 
     def test_wrong_device(self):
         m = json.loads((self.pkg / contract.MANIFEST_NAME).read_text())
-        m["device_hostname"] = "AsusLaptop-Andres"
+        m["device_hostname"] = "Laptop"
         (self.pkg / contract.MANIFEST_NAME).write_text(json.dumps(m))
         with self.assertRaises(imp.DesktopImportError):
             imp.load_manifest(self.pkg)

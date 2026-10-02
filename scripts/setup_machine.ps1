@@ -7,7 +7,10 @@ param(
 
     [switch]$RecreateVenv,
 
-    [switch]$SkipOpenAITest
+    [switch]$SkipOpenAITest,
+
+    # Base interpreter used to create .venv. Default: python on PATH.
+    [string]$PythonPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -16,7 +19,22 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VenvPath = Join-Path $ProjectRoot ".venv"
 $RequirementsPath = Join-Path $ProjectRoot "requirements.txt"
-$PythonPath = "C:\ProgramData\anaconda3\python.exe"
+if (-not $PythonPath) {
+    $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($PythonCommand) { $PythonPath = $PythonCommand.Source }
+}
+
+# Device IDs (ActivityWatch hostnames) come from config/local_settings.json,
+# the same file config/settings.py reads; generic defaults otherwise.
+$LaptopDevice = "Laptop"
+$DesktopDevice = "Desktop"
+$LocalSettingsPath = Join-Path $ProjectRoot "config\local_settings.json"
+if ($env:TIME_ACCOUNTING_SETTINGS) { $LocalSettingsPath = $env:TIME_ACCOUNTING_SETTINGS }
+if (Test-Path $LocalSettingsPath) {
+    $LocalSettings = Get-Content $LocalSettingsPath -Raw | ConvertFrom-Json
+    if ($LocalSettings.devices.laptop) { $LaptopDevice = $LocalSettings.devices.laptop }
+    if ($LocalSettings.devices.desktop) { $DesktopDevice = $LocalSettings.devices.desktop }
+}
 
 function Write-Step {
     param([string]$Message)
@@ -38,11 +56,11 @@ function Get-ExpectedMachine {
 
     $hostname = $env:COMPUTERNAME
 
-    if ($hostname -eq "AsusLaptop-Andres") {
+    if ($hostname -eq $LaptopDevice) {
         return "laptop"
     }
 
-    if ($hostname -eq "DesktopPC-Andres") {
+    if ($hostname -eq $DesktopDevice) {
         return "desktop"
     }
 
@@ -121,7 +139,7 @@ Write-Host "Hostname      : $Hostname"
 Write-Host "Base Python   : $PythonPath"
 Write-Host "Venv          : $VenvPath"
 
-Test-FileExists -Path $PythonPath -Description "Anaconda Python"
+Test-FileExists -Path $PythonPath -Description "Base Python (pass -PythonPath)"
 Test-FileExists -Path $RequirementsPath -Description "requirements.txt"
 
 Write-Step "Base Python"
@@ -129,7 +147,7 @@ Write-Step "Base Python"
 $BaseVersion = & $PythonPath --version 2>&1
 
 if ($LASTEXITCODE -ne 0) {
-    Fail "Unable to execute Anaconda Python."
+    Fail "Unable to execute base Python."
 }
 
 Write-Host "Base Python   : $BaseVersion"
@@ -223,14 +241,14 @@ Write-Step "Machine Configuration"
 switch ($DetectedMachine) {
     "laptop" {
         Write-Host "Source        : asus_laptop"
-        Write-Host "Device        : AsusLaptop-Andres"
+        Write-Host "Device        : $LaptopDevice"
         Write-Host "Context       : Work"
         Write-Host "Launcher      : activitywatch_laptop.py"
     }
 
     "desktop" {
         Write-Host "Source        : desktop"
-        Write-Host "Device        : DesktopPC-Andres"
+        Write-Host "Device        : $DesktopDevice"
         Write-Host "Context       : Personal"
         Write-Host "Launcher      : activitywatch_desktop.py"
     }

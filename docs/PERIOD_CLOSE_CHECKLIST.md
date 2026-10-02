@@ -38,8 +38,8 @@ Date closed: _________________________
 
 - [ ] All known habit overstatements reviewed.
 - [ ] All attribution corrections reviewed.
-- [ ] Brother/Desktop correction handled through ActivityWatch Desktop target.
-- [ ] Apple Screen Time was not reduced for Brother/Desktop correction.
+- [ ] Shared-device attribution handled through the configured ActivityWatch device target.
+- [ ] Apple Screen Time was not reduced for a shared-device attribution correction.
 - [ ] Applied and unapplied adjustment amounts audited.
 - [ ] No adjustment silently created time.
 

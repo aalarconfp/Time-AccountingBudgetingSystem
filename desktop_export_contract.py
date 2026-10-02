@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from config.settings import DESKTOP_DEVICE
+
 # --------------------------------------------------------------------------
 # Identity
 # --------------------------------------------------------------------------
@@ -29,7 +31,9 @@ EXPORT_CONTRACT_VERSION = "1.0"
 # The collector only ever produces one source/device.
 SOURCE = "ActivityWatch"
 DEVICE_KEY = "desktop"
-DEVICE_HOSTNAME = "DesktopPC-Andres"
+# Configured per installation (config/settings.py); it must match the
+# collector's device hostname.
+DEVICE_HOSTNAME = DESKTOP_DEVICE
 
 # --------------------------------------------------------------------------
 # CSV schema contracts (mirror System Tracker)

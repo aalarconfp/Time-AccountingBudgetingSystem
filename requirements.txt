@@ -8,8 +8,9 @@
 #
 # Notes:
 #   aw-client : laptop ActivityWatch collection (activitywatch_pipeline.py)
-#   openai    : iPhone + Habit screenshot ingestion only
-#               (iphone_screen_time_ingest.py, habit_offdevice_ingest.py)
+#   openai    : iPhone screenshot ingestion only (iphone_screen_time_ingest.py)
+#   Pillow    : screenshot image handling (iphone_screen_time_ingest.py,
+#               habit_screenshot_ingest.py bar charts); >=9.1 for Image.Resampling
 #   tzdata    : America/Bogota timezone on Windows
 #
 # import_desktop_activitywatch.py is stdlib-only.
@@ -17,4 +18,5 @@
 
 aw-client
 openai
+Pillow>=9.1
 tzdata

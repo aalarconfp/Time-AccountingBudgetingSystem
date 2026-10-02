@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from config.settings import SHARED_DEVICE_RULE
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -53,10 +55,6 @@ DAY_MINUTES = 1440.0
 DAY_SECONDS = DAY_MINUTES * 60.0
 
 RECONCILIATION_TOLERANCE_MIN = 120.0
-
-BROTHER_REASON_TOKEN = (
-    "brother using pc desktop"
-)
 
 UNCATEGORIZED_CATEGORY = (
     "Uncategorized"
@@ -504,7 +502,7 @@ def load_classification_removals(
     the Habit manual-adjustment pipeline already applied the
     corresponding correction to the analytical records.
 
-    Brother-PC rows are therefore never double-applied.
+    Shared-device attribution rows are therefore never double-applied.
     """
     if not CLASSIFICATION_REMOVALS_FILE.exists():
         return []
@@ -612,16 +610,16 @@ def load_classification_removals(
     return removals
 
 
-def is_brother_pc_adjustment(
+def is_shared_device_adjustment(
     adjustment: HabitAdjustment,
 ) -> bool:
+    """True when a negative Habit adjustment is a shared-device rule hit."""
     return (
         adjustment.category.strip().lower()
-        == "offline work tracking"
+        == SHARED_DEVICE_RULE.habit_category.lower()
         and adjustment.adjustment_sec < 0
-        and (
-            BROTHER_REASON_TOKEN
-            in adjustment.reason.lower()
+        and SHARED_DEVICE_RULE.matches_reason(
+            adjustment.reason
         )
     )
 
@@ -637,10 +635,10 @@ def apply_habit_adjustments(
     """
     Apply legitimate Habit corrections.
 
-    Brother-PC corrections are excluded from direct Habit
-    subtraction because the Habit record represents no verified
-    personal time in that case. Those corrections are redirected
-    to ActivityWatch Desktop / Uncategorized.
+    Shared-device corrections are excluded from direct Habit
+    subtraction because the Habit record represents time of a
+    secondary user, not of the tracked subject. Those corrections
+    are redirected to the configured shared device / Uncategorized.
     """
     result = list(records)
 
@@ -653,7 +651,7 @@ def apply_habit_adjustments(
     ] = []
 
     for adjustment in adjustments:
-        if is_brother_pc_adjustment(
+        if is_shared_device_adjustment(
             adjustment
         ):
             attribution_adjustments.append(
@@ -856,19 +854,16 @@ def apply_habit_adjustments(
     )
 
 
-def is_desktop_record(
+def is_shared_device_record(
     record: Record,
 ) -> bool:
-    device = record.device.lower()
-
     return (
-        "desktop" in device
-        or device == "pc"
-        or "windows desktop" in device
+        record.device.strip().lower()
+        == SHARED_DEVICE_RULE.target_device.lower()
     )
 
 
-def apply_brother_pc_attribution(
+def apply_shared_device_attribution(
     records: list[Record],
     adjustments: list[HabitAdjustment],
 ) -> tuple[
@@ -876,8 +871,8 @@ def apply_brother_pc_attribution(
     list[dict[str, object]],
 ]:
     """
-    Remove Brother-PC time only from ActivityWatch Desktop
-    Uncategorized records.
+    Remove secondary-user time only from ActivityWatch
+    Uncategorized records on the configured shared device.
 
     Apple Screen Time is explicitly excluded.
     """
@@ -899,7 +894,7 @@ def apply_brother_pc_attribution(
                 record.date == adjustment.date
                 and record.source.lower()
                 == ACTIVITYWATCH_SOURCE.lower()
-                and is_desktop_record(record)
+                and is_shared_device_record(record)
                 and (
                     record.category.lower()
                     == UNCATEGORIZED_CATEGORY.lower()
@@ -948,7 +943,7 @@ def apply_brother_pc_attribution(
                     - deduction
                 ),
                 allocation_type=(
-                    "Brother-PC Attribution Removal"
+                    SHARED_DEVICE_RULE.allocation_type
                 ),
             )
 
@@ -973,7 +968,9 @@ def apply_brother_pc_attribution(
                     "ATTRIBUTION_REMOVAL"
                 ),
                 "Source": ACTIVITYWATCH_SOURCE,
-                "Device_Target": "Desktop",
+                "Device_Target": (
+                    SHARED_DEVICE_RULE.target_device_key.title()
+                ),
                 "Category_Target": (
                     UNCATEGORIZED_CATEGORY
                 ),
@@ -1001,7 +998,9 @@ def apply_brother_pc_attribution(
         print(
             "  ATTRIBUTION REMOVAL | "
             f"{adjustment.date} | "
-            "ActivityWatch Desktop / Uncategorized | "
+            "ActivityWatch "
+            f"{SHARED_DEVICE_RULE.target_device_key.title()} "
+            "/ Uncategorized | "
             f"requested="
             f"{requested / 60.0:.1f} min | "
             f"applied="
@@ -1035,7 +1034,7 @@ def build_classification_audit(
         for adjustment in habit_adjustments
         if (
             adjustment.adjustment_sec < 0
-            and not is_brother_pc_adjustment(
+            and not is_shared_device_adjustment(
                 adjustment
             )
         )
@@ -1051,9 +1050,8 @@ def build_classification_audit(
             removal.habit_category.lower(),
         )
 
-        if (
-            BROTHER_REASON_TOKEN
-            in removal.reason.lower()
+        if SHARED_DEVICE_RULE.matches_reason(
+            removal.reason
         ):
             status = (
                 "HANDLED_BY_ATTRIBUTION_REMOVAL"
@@ -2477,7 +2475,7 @@ def main() -> int:
     (
         corrected_records,
         attribution_audit,
-    ) = apply_brother_pc_attribution(
+    ) = apply_shared_device_attribution(
         corrected_records,
         attribution_adjustments,
     )

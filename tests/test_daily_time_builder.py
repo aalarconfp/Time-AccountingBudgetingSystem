@@ -144,19 +144,19 @@ class TestActivityWatchUnchanged(Base):
         self.assertEqual(by_key[("Education", "Data & BI Courses")]["Event_Count"], "1")
 
     def test_laptop_build_unchanged(self):
-        self.check_source("asus_laptop", "AsusLaptop-Andres")
+        self.check_source("asus_laptop", "Laptop")
 
     def test_desktop_build_unchanged(self):
-        self.check_source("desktop", "DesktopPC-Andres")
+        self.check_source("desktop", "Desktop")
 
     def test_laptop_cli_still_passes(self):
-        self.write_fact("asus_laptop", fact_row("AsusLaptop-Andres", 1, 60, "Utilities", "System Processes"))
+        self.write_fact("asus_laptop", fact_row("Laptop", 1, 60, "Utilities", "System Processes"))
         code, output = self.run_main("--source", "asus_laptop", "--date", DAY.isoformat())
         self.assertEqual(code, 0)
         self.assertIn("RESULT: DAILY_TIME BUILD PASSED.", output)
 
     def test_desktop_cli_still_passes(self):
-        self.write_fact("desktop", fact_row("DesktopPC-Andres", 1, 60, "Utilities", "System Processes"))
+        self.write_fact("desktop", fact_row("Desktop", 1, 60, "Utilities", "System Processes"))
         code, output = self.run_main("--source", "desktop", "--date", DAY.isoformat())
         self.assertEqual(code, 0)
         self.assertIn("RESULT: DAILY_TIME BUILD PASSED.", output)

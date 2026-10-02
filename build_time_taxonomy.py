@@ -1,4 +1,4 @@
-# G:\My Drive\Personal Life\Habit and Wellness\System_Tracker\build_time_taxonomy.py
+# FILE: build_time_taxonomy.py
 
 """Validate the canonical Category / Domain / Energy / Goal mapping layer."""
 

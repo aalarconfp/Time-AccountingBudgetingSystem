@@ -9,6 +9,8 @@ from typing import Final
 
 from aw_client import ActivityWatchClient
 
+from config.settings import DESKTOP_DEVICE, LAPTOP_DEVICE
+
 
 ACTIVITYWATCH_CLIENT_NAME: Final = "system_tracker_launcher"
 
@@ -25,14 +27,14 @@ class ActivityWatchMachine:
 
 LAPTOP: Final = ActivityWatchMachine(
     name="laptop",
-    hostname="AsusLaptop-Andres",
+    hostname=LAPTOP_DEVICE,
     source="asus_laptop",
     context="Work",
 )
 
 DESKTOP: Final = ActivityWatchMachine(
     name="desktop",
-    hostname="DesktopPC-Andres",
+    hostname=DESKTOP_DEVICE,
     source="desktop",
     context="Personal",
 )

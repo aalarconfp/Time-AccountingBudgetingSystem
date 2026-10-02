@@ -1,0 +1,12 @@
+{
+  "devices": {
+    "laptop": "Laptop",
+    "desktop": "Desktop"
+  },
+  "shared_device_attribution": {
+    "habit_category": "Offline Work Tracking",
+    "reason_tokens": ["shared device: secondary user"],
+    "target_device": "desktop",
+    "allocation_type": "Shared Device Attribution Removal"
+  }
+}

@@ -84,8 +84,8 @@ period_close_validator  --require-eda --require-standard-report
 
 | Step | Runs on | Why |
 |---|---|---|
-| `activitywatch_laptop.py`, `activitywatch_pipeline.py` | Laptop `AsusLaptop-Andres` | reads the local ActivityWatch server; `activitywatch_machine.validate_machine` refuses elsewhere |
-| Desktop collection (`collect_desktop.py`, `export_package.py`) | Desktop `DesktopPC-Andres` | separate project; reads the local ActivityWatch server |
+| `activitywatch_laptop.py`, `activitywatch_pipeline.py` | Laptop (`<laptop device>`) | reads the local ActivityWatch server; `activitywatch_machine.validate_machine` refuses elsewhere |
+| Desktop collection (`collect_desktop.py`, `export_package.py`) | Desktop (`<desktop device>`) | separate project; reads the local ActivityWatch server |
 | `import_desktop_activitywatch.py` | Laptop / central | stdlib-only; consumes the export package |
 | `daily_time_builder.py`, `fact_time_validator.py`, taxonomy, integration, final, detail, EDA, report, close | Laptop / central | pure file processing over `output/` |
 | iPhone / Habit ingest | Laptop / central | needs `OPENAI_API_KEY` + internet |

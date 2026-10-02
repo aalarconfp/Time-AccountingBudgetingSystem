@@ -11,6 +11,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
+from config.settings import SHARED_DEVICE_RULE
+
 
 TOLERANCE_SEC = 1.0
 TOLERANCE_MIN = TOLERANCE_SEC / 60.0
@@ -889,19 +891,20 @@ def validate_correction_audit(
         ),
     )
 
-    brother_rows = [
+    shared_device_rows = [
         row
         for row in rows
-        if "Brother"
-        in str(row.get("Reason", ""))
+        if SHARED_DEVICE_RULE.matches_reason(
+            str(row.get("Reason", ""))
+        )
     ]
 
     validator.check(
-        "Brother/Desktop correction audit is consistent",
+        "Shared-device attribution audit is consistent",
         True,
         (
-            f"{len(brother_rows)} related correction row(s); "
-            "no Brother/Desktop correction is required when "
+            f"{len(shared_device_rows)} related correction row(s); "
+            "no shared-device correction is required when "
             "no such correction was applied."
         ),
     )

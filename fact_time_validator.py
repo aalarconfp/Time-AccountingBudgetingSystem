@@ -1,4 +1,4 @@
-# G:\My Drive\Personal Life\Habit and Wellness\System_Tracker\fact_time_validator.py
+# FILE: fact_time_validator.py
 
 """Validate Fact_Time datasets against Raw ActivityWatch datasets.
 
@@ -16,8 +16,8 @@ The validator checks:
 
 Validation is source-aware and supports the configured ActivityWatch devices:
 
-    asus_laptop -> AsusLaptop-Andres
-    desktop     -> DesktopPC-Andres
+    asus_laptop -> configured laptop device ID (config/settings.py)
+    desktop     -> configured desktop device ID (config/settings.py)
 
 Examples:
 

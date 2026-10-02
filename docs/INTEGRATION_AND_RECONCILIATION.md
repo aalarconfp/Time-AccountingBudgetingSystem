@@ -51,13 +51,15 @@ A specific analytical classification is removed from its current category.
 
 The time is not correctly attributed to the current observer.
 
-For the Brother/Desktop case:
+For shared-device attribution (time a secondary user spent on a shared
+device), the rule configured in `config/settings.py` redirects matching
+negative Habit adjustments to:
 
 ```text
-ActivityWatch Desktop / Uncategorized
+ActivityWatch <shared device> / Uncategorized
 ```
 
-is the intended target when available.
+which is the intended target when available.
 
 Apple Screen Time is not reduced for this correction.
 

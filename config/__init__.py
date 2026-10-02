@@ -1,1 +1,1 @@
-"""Configuration package for the Personal Life Tracker."""
+"""Configuration package for the Time Accounting & Budgeting System."""

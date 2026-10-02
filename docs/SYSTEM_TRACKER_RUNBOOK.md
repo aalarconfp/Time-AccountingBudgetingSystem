@@ -2,7 +2,7 @@
 
 Version: 2.0
 Status: Canonical operational runbook
-Supersedes: `docs/history/PERIOD_PIPELINE_RUNBOOK_FINAL.md` (archived)
+Supersedes: the earlier period-pipeline runbook (retired; see git history)
 
 This is the single source of truth for running a reporting period. Do not
 reconstruct the process from chat history or from the archived runbook. Follow
@@ -109,7 +109,7 @@ reporting-period destination directories.
 
 ## Phase B — Collect sources
 
-### B1. ActivityWatch — laptop  *(run on `AsusLaptop-Andres`)*
+### B1. ActivityWatch — laptop  *(run on the laptop, `<laptop device>`)*
 
 ```powershell
 python .\activitywatch_laptop.py --start-date "2026-09-01" --end-date "2026-09-30" --force
@@ -133,7 +133,7 @@ python .\import_desktop_activitywatch.py --package "<package directory or .zip>"
 The importer re-validates the manifest (contract version, device/source,
 per-file checksums, CSV headers, contiguous inclusive coverage, collector
 validation status) and **refuses any date inside a closed period** unless
-`--force`. It writes `output/Raw|Fact|Daily/.../DesktopPC-Andres/` and an
+`--force`. It writes `output/Raw|Fact|Daily/.../<desktop device>/` and an
 `output/Imports/Import_Receipt_*.json`. Human review: confirm the receipt's
 period, `files_new`/`files_replaced`, and `empty_dates`.
 
@@ -272,8 +272,8 @@ output\Integrated\Analysis\Human_Review\Integration_Classification_Removals.csv
 Rules: every adjustment needs a reason; do not delete records silently; do not
 edit generated final CSVs; do not use an adjustment to hide a source-processing
 bug; do not reduce one device merely because another observed the same time.
-For the Brother/Desktop correction: target ActivityWatch Desktop / Uncategorized
-when available; do **not** reduce Apple Screen Time; apply only the amount
+For a shared-device (secondary user) correction: target ActivityWatch on the
+configured shared device / Uncategorized when available; do **not** reduce Apple Screen Time; apply only the amount
 actually available; preserve unapplied time in the audit.
 
 ### D4. Apply Habit / manual adjustments
@@ -456,8 +456,8 @@ Period-Close Checklist → archive → historical integration → commit
 
 | Step | Machine |
 |---|---|
-| `activitywatch_laptop.py`, `activitywatch_pipeline.py` | Laptop (`AsusLaptop-Andres`) — needs the local ActivityWatch server |
-| Desktop collection (`collect_desktop.py`, `export_package.py`) | Desktop (`DesktopPC-Andres`) — separate project |
+| `activitywatch_laptop.py`, `activitywatch_pipeline.py` | Laptop (`<laptop device>`) — needs the local ActivityWatch server |
+| Desktop collection (`collect_desktop.py`, `export_package.py`) | Desktop (`<desktop device>`) — separate project |
 | `import_desktop_activitywatch.py` and everything downstream | Laptop / central — pure file processing |
 | iPhone / Habit ingest | Laptop / central — needs `OPENAI_API_KEY` + internet |
 
@@ -466,7 +466,7 @@ Period-Close Checklist → archive → historical integration → commit
 ## Non-negotiable rules
 
 1. Do not manually edit generated analytical CSVs.
-2. Do not reduce Apple Screen Time for the Brother/Desktop correction.
+2. Do not reduce Apple Screen Time for a shared-device attribution correction.
 3. Do not treat Off-Device Life as missing time.
 4. Do not force analytical activity to equal clock capacity.
 5. Do not change taxonomy merely because a node is large.

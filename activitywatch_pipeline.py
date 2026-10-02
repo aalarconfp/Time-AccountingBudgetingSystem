@@ -1,4 +1,4 @@
-# G:\My Drive\Personal Life\Habit and Wellness\System_Tracker\activitywatch_pipeline.py
+# FILE: activitywatch_pipeline.py
 
 """Run the completed-day ActivityWatch -> Fact_Time pipeline.
 

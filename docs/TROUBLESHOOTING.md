@@ -93,7 +93,7 @@ Do not manually edit final analytical CSVs.
 - **Incompatible `export_contract_version`** — the collector and this repo are
   on different contract majors. Update the older side (`contract.py` in the
   collector; `desktop_export_contract.py` here — keep them in sync).
-- **Wrong device / source** — the package is not `DesktopPC-Andres` /
+- **Wrong device / source** — the package is not `<desktop device>` /
   ActivityWatch. Wrong package.
 - **`checksum mismatch` / `unexpected Raw|Fact header`** — the package was
   edited after export, or was produced by an old collector. Re-run

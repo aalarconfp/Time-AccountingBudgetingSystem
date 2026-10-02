@@ -1,14 +1,16 @@
-# Habit & Wellness System Tracker
+# Time Accounting & Budgeting System — Operational Documentation
 
-Central project for integrating, reconciling, analyzing, and reporting personal
-time data across ActivityWatch (laptop + desktop), Apple Screen Time, and
-Habit / Off-Device tracking.
+Operational documentation for integrating, reconciling, analyzing, and
+reporting personal time data across ActivityWatch (laptop + desktop), Apple
+Screen Time, and Habit / Off-Device tracking. Device IDs and the
+shared-device attribution rule are configured per installation (see
+`DATA_COLLECTION.md` → Device configuration).
 
 ## Two projects
 
 | Project | Repo | Responsibility |
 |---|---|---|
-| **System Tracker** | this repo | Import desktop data · laptop ActivityWatch · iPhone · Habit · taxonomy · integration · reconciliation · final / detail / EDA analysis · Standard Report · period close · historical integration · budgets |
+| **System Tracker** | this repo | Import desktop data · laptop ActivityWatch · iPhone · Habit · taxonomy · integration · reconciliation · final / detail / EDA analysis · Standard Report · period close · historical integration · budgets (planned) |
 | **Desktop Tracker Collector** | `../Desktop Tracker Collector/` | Desktop ActivityWatch only: collect → Raw → Fact_Time → Daily_Time → validate → portable export package |
 
 The desktop PC does not need this repo. It produces a versioned export package
@@ -58,7 +60,6 @@ the same elapsed time. Taxonomy: 12 categories, 7 domains, 5 energies, 3 goals.
 - `GLOSSARY.md` — canonical terminology
 - `PYTHON_ENVIRONMENT.md` — per-machine Python environment
 - `POWER_BI_DASHBOARD_FUTURE.md` — future dashboard notes
-- `history/` — retired documents and scripts (reference only)
 
 Desktop collection is documented in the Desktop Tracker Collector's own
 `docs/` (`COLLECTION_RUNBOOK.md`, `EXPORT_CONTRACT.md`, `DESKTOP_MACHINE.md`,

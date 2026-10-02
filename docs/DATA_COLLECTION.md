@@ -9,10 +9,21 @@ reconciliation.
 
 | Source | Device | How it enters System Tracker |
 |---|---|---|
-| ActivityWatch — laptop | `AsusLaptop-Andres` | `activitywatch_laptop.py` → `activitywatch_pipeline.py` (run on the laptop) |
-| ActivityWatch — desktop | `DesktopPC-Andres` | **imported** from the Desktop Tracker Collector via `import_desktop_activitywatch.py` |
+| ActivityWatch — laptop | `<laptop device>` | `activitywatch_laptop.py` → `activitywatch_pipeline.py` (run on the laptop) |
+| ActivityWatch — desktop | `<desktop device>` | **imported** from the Desktop Tracker Collector via `import_desktop_activitywatch.py` |
 | Apple Screen Time | iPhone | screenshots under `input/iPhone/ScreenTime/<YYYY-MM>/<YYYY-MM-DD>/` → `iphone_screen_time_*` |
 | Habit / Off-Device | — | screenshots under `input/Habit/<YYYY-MM>/` + evidence index/manifest → `habit_screenshot_*` |
+
+### Device configuration
+
+Device IDs are set per installation, not in code. Copy
+`config/local_settings.example.json` to `config/local_settings.json`
+(git-ignored) and set `devices.laptop` / `devices.desktop` to each machine's
+ActivityWatch hostname. Defaults are `Laptop` and `Desktop`. The ID is also the
+directory name under `output/Raw|Fact|Daily/.../`, so change it only together
+with existing data. The same file holds the shared-device attribution rule
+(`shared_device_attribution`): Habit category, reason tokens, target device and
+allocation label. Set `TIME_ACCOUNTING_SETTINGS` to use a file elsewhere.
 
 ## Collection principles
 
@@ -50,7 +61,7 @@ share the same `activitywatch_raw_loader.py`).
 
 ### Laptop
 
-Run on `AsusLaptop-Andres`:
+Run on the laptop (`<laptop device>`):
 
 ```powershell
 python .\activitywatch_laptop.py --start-date "<START>" --end-date "<END>" --force
@@ -72,10 +83,10 @@ python .\import_desktop_activitywatch.py --package "<package dir or .zip>"
 ```
 
 The importer re-validates the manifest (export-contract version, device =
-`DesktopPC-Andres`, source = ActivityWatch, per-file SHA-256, Raw/Fact CSV
+`<desktop device>`, source = ActivityWatch, per-file SHA-256, Raw/Fact CSV
 headers, contiguous inclusive coverage, collector validation status = PASS) and
 **refuses any date that falls inside a closed reporting period** unless
-`--force`. It lands data in `output/Raw|Fact|Daily/.../DesktopPC-Andres/` and
+`--force`. It lands data in `output/Raw|Fact|Daily/.../<desktop device>/` and
 writes `output/Imports/Import_Receipt_<range>_<UTC>.json`.
 
 Human review of the receipt: confirm the period, `files_new` / `files_replaced`,
