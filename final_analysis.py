@@ -341,9 +341,17 @@ def load_integrated_records(
                 or ""
             )
 
+            # Integrated rows carry the physical device in Source_Device;
+            # only ActivityWatch uses it so laptop and desktop stay distinct.
             device = (
                 row.get("Device")
                 or row.get("Machine")
+                or (
+                    row.get("Source_Device")
+                    if source.lower()
+                    == ACTIVITYWATCH_SOURCE.lower()
+                    else ""
+                )
                 or source
             )
 

@@ -236,7 +236,7 @@ def load_time_universe(
 
     for row in rows:
         if row.get("Time_Bucket") == "Period Capacity":
-            capacity += number(row.get("Corrected_Tracked_min")) * 60.0
+            capacity += number(row.get("Capacity_min")) * 60.0
 
         if row.get("Time_Bucket") == "Period Capacity":
             overlap += number(row.get("Overlap_min")) * 60.0
