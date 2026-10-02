@@ -1,6 +1,6 @@
 # Time Accounting & Budgeting System
 
-> An open-source framework (license to be selected) for personal time intelligence:
+> An open-source framework for personal time intelligence:
 > **Tracking → Time Accounting → Time Budgeting → KPIs / decision support.**
 > Tracking and time accounting are implemented; time budgeting and the KPI/decision layer are planned.
 
@@ -523,26 +523,3 @@ The goal is:
 No release has been tagged yet. The current codebase implements the accounting, reconciliation, analysis, validation, and period-close framework. Time budgeting is the next planned layer built on top of that foundation.
 
 ---
-
-# License
-
-License to be selected. No license file has been added yet, so no open-source license is currently granted.
-
----
-
-# Contributing
-
-Contributions are welcome.
-
-Areas of interest include:
-
-- New data-source integrations
-- Reconciliation methods
-- Taxonomy design
-- Time-accounting models
-- KPI frameworks
-- Budgeting methodologies
-- Data-quality validation
-- Visualization and reporting
-
-Contributions should preserve the project's core principles of reproducibility, transparency, evidence-based analysis, and separation between observed data and inferred or manually adjusted information.
