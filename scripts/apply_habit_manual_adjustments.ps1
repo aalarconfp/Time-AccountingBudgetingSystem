@@ -38,7 +38,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
-Write-Host "Do not rerun habit_offdevice_builder.py after this step."
+Write-Host "Do not rerun habit_screenshot_builder.py after this step."
 Write-Host "Next step: rebuild Integrated Daily Time."
 Write-Host ""
 Write-Host "RESULT: HABIT MANUAL ADJUSTMENTS PASSED."

@@ -320,6 +320,7 @@ def apply_corrections(
     Corrections are idempotent:
     - old_value -> new_value applies the correction.
     - new_value -> new_value is treated as already applied.
+    - old_value null adds a category omitted by the AI extraction.
     - any other value is a genuine conflict.
     """
     if not correction_path.exists():
@@ -391,10 +392,41 @@ def apply_corrections(
 
         category_name = match.group(1)
 
-        category = find_category(
-            rebuilt,
-            category_name,
-        )
+        # old_value null documents a category that is visible in the
+        # screenshot but was omitted by the AI extraction.
+        if old_value is None:
+            try:
+                category = find_category(
+                    rebuilt,
+                    category_name,
+                )
+            except ValueError:
+                rebuilt.setdefault(
+                    "categories",
+                    [],
+                ).append(
+                    {
+                        "apple_category": category_name,
+                        "duration_display": new_value,
+                    }
+                )
+
+                applied.append(
+                    {
+                        "path": path,
+                        "old_value": old_value,
+                        "new_value": new_value,
+                        "reason": reason,
+                        "status": "added",
+                    }
+                )
+
+                continue
+        else:
+            category = find_category(
+                rebuilt,
+                category_name,
+            )
 
         actual_value = category.get(
             "duration_display"

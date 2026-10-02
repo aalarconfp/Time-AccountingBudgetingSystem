@@ -12,7 +12,7 @@ reconciliation.
 | ActivityWatch — laptop | `AsusLaptop-Andres` | `activitywatch_laptop.py` → `activitywatch_pipeline.py` (run on the laptop) |
 | ActivityWatch — desktop | `DesktopPC-Andres` | **imported** from the Desktop Tracker Collector via `import_desktop_activitywatch.py` |
 | Apple Screen Time | iPhone | screenshots under `input/iPhone/ScreenTime/<YYYY-MM>/<YYYY-MM-DD>/` → `iphone_screen_time_*` |
-| Habit / Off-Device | — | screenshots under `input/Habit/<YYYY-MM>/<YYYY-MM-DD>/` → `habit_offdevice_*` |
+| Habit / Off-Device | — | screenshots under `input/Habit/<YYYY-MM>/` + evidence index/manifest → `habit_screenshot_*` |
 
 ## Collection principles
 
@@ -92,8 +92,10 @@ attribution corrections.
 
 ## Habit / Off-Device
 
-Save the screenshots; process through `habit_offdevice_ingest.py` /
-`habit_offdevice_builder.py`. Review manually entered activity for completeness,
+Save the screenshots under `input/Habit/<YYYY-MM>/`, classify them in the
+screenshot index and record daily evidence in the manifest; process through
+`habit_screenshot_ingest.py` / `habit_screenshot_builder.py`. Review manually
+entered activity for completeness,
 duplicates, overstatement, and period boundaries.
 
 ## Collection sign-off  *(human gate)*
@@ -101,6 +103,6 @@ duplicates, overstatement, and period boundaries.
 - [ ] Laptop ActivityWatch collected and pipelined.
 - [ ] Desktop package imported; import receipt reviewed.
 - [ ] Apple Screen Time screenshots present for every date.
-- [ ] Habit screenshots present for every date.
+- [ ] Habit screenshots present for every tracker (monthly calendars, daily details, bar charts) and indexed.
 - [ ] No unexplained source gaps.
 - [ ] Device/source identity correct throughout.

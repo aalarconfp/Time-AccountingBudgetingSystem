@@ -93,8 +93,8 @@ python -m py_compile `
     build_time_taxonomy.py fact_time_validator.py daily_time_builder.py `
     activitywatch_pipeline.py import_desktop_activitywatch.py `
     iphone_screen_time_ingest.py iphone_screen_time_promote.py `
-    iphone_screen_time_builder.py habit_offdevice_ingest.py `
-    habit_offdevice_builder.py integration_analysis.py `
+    iphone_screen_time_builder.py habit_screenshot_ingest.py `
+    habit_screenshot_builder.py integration_analysis.py `
     integration_human_review.py integrated_daily_time_builder.py `
     habit_manual_adjustments.py final_analysis.py detail_analysis.py `
     exploratory_analysis.py standard_report.py period_close_validator.py
@@ -144,7 +144,12 @@ Save the original iPhone screenshots (do not alter them) under
 
 ### B4. Habit / Off-Device — evidence
 
-Save Habit screenshots under `input\Habit\2026-09\2026-09-DD\`. Review that all
+Save Habit screenshots directly under `input\Habit\2026-09\` (monthly calendars,
+extra daily-detail screenshots where the calendar hides minutes, and the Sleep /
+Workout monthly bar charts). Classify every image in
+`Habit_Screenshot_Index_2026-09.csv` and record daily evidence in
+`Habit_Evidence_Manifest_2026-09.csv` (bar-chart settings in
+`Habit_Bar_Charts_2026-09.json`). Review that all
 legitimate offline activity for the period is recorded (meals, showering,
 commuting, conversations, pauses, offline work/study).
 
@@ -198,17 +203,28 @@ taxonomy/logic changes that need no new screenshots.
 
 ### C3. Habit / Off-Device
 
+Screenshots are direct daily evidence — no cumulative weekly/monthly deltas,
+resets or baselines. Evidence classes (`Allocation_Type`): `Observed` (value
+shown), `Target_Derived` (completed, configured target: Journaling 15, Meditation
+15, Read a book 30, Motorcycle 120 min), `Inferred` (Sleep / Workout bar heights
+calibrated to the displayed monthly average), `Review` (completed without a
+defensible duration — 0 min, flagged).
+
 ```powershell
-python .\habit_offdevice_ingest.py --month "2026-09" --dry-run
-python .\habit_offdevice_ingest.py --month "2026-09"
+python .\habit_screenshot_ingest.py --month "2026-09"     # validate + normalize evidence ($0, no API)
+python .\habit_screenshot_builder.py --month "2026-09" --output-root "<scratch>"   # stage first
 ```
 
-**Human review (gate):** check the extraction for completeness, duplicates,
-overstatement, and period boundaries. Then:
+**Human review (gate):** check the staged audit
+(`<scratch>\Analysis\Habit\Screenshot\2026-09\Habit_Audit_Report_2026-09.md`) against
+the screenshots for completeness, duplicates, overstatement, and period
+boundaries. Then:
 
 ```powershell
-python .\habit_offdevice_builder.py --month "2026-09" --date "2026-09-01" [--date ...] --force
+python .\habit_screenshot_builder.py --month "2026-09"
 ```
+
+The superseded cumulative scripts are archived in `old scripts\`.
 
 ### C4. Taxonomy
 
@@ -413,7 +429,7 @@ laptop ActivityWatch  +  import desktop package
 daily_time_builder (as needed)  +  fact_time_validator
         ↓
 iPhone: ingest → review → promote → categorize residuals → builder
-Habit:  ingest → review → builder
+Habit:  screenshot ingest (manifest) → staged build → review → builder
         ↓
 build_time_taxonomy
         ↓

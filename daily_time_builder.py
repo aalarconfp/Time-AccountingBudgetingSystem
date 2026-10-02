@@ -20,6 +20,11 @@ Daily_Time preserves the established seven-column schema:
     Duration_min
     Duration_hours
     Event_Count
+
+iPhone (Apple Screen Time) is refused: its Daily_Time carries provenance
+(Allocation_Type, Evidence_Type, Evidence_Source) that this seven-column
+schema would erase, so it is produced only by iphone_screen_time_builder.py
+(observed days) and apple_screen_time_finalize.py (estimated days).
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from config.paths import DAILY_ROOT, FACT_TIME_ROOT
-from config.sources import SourceDefinition, get_source_definition
+from config.sources import SourceDefinition, SourceType, get_source_definition
 from config.tracker_config import DEFAULT_TIMEZONE
 
 
@@ -86,6 +91,19 @@ def validate_completed_date(target_date: date) -> None:
         raise ValueError(
             f"Date {target_date.isoformat()} is not a completed day. "
             f"The latest completed date is {latest_date.isoformat()}."
+        )
+
+
+def ensure_generic_build_allowed(source: SourceDefinition) -> None:
+    """Refuse sources whose Daily_Time is owned by a dedicated pipeline."""
+    if source.source == SourceType.APPLE_SCREEN_TIME:
+        raise ValueError(
+            "iPhone Daily_Time must not be built by daily_time_builder.py: "
+            "its seven-column schema would erase Allocation_Type, "
+            "Evidence_Type and Evidence_Source (estimated and derived rows "
+            "would become Observed). Use iphone_screen_time_builder.py for "
+            "observed days and apple_screen_time_finalize.py for estimated "
+            "days. No files were read or written."
         )
 
 
@@ -182,7 +200,8 @@ def parse_arguments() -> argparse.Namespace:
         ],
         default="asus_laptop",
         help=(
-            "Configured source. Default: asus_laptop."
+            "Configured source. Default: asus_laptop. "
+            "iphone is refused (its Daily_Time is built by the iPhone pipeline)."
         ),
     )
 
@@ -430,6 +449,8 @@ def build_date(
     target_date: date,
 ) -> tuple[int, float, bool]:
     """Build Daily_Time for one date."""
+    ensure_generic_build_allowed(source)
+
     fact_path = get_fact_time_path(
         source,
         target_date,
@@ -515,6 +536,8 @@ def main() -> int:
         source = get_source_definition(
             args.source
         )
+
+        ensure_generic_build_allowed(source)
 
         start_date, end_date = parse_date_range(args)
 
